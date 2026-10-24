@@ -123,7 +123,8 @@ jobs:
             }
 
             Write-Output '----- salida -----'
-            if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem }  # la redirección de cmd escribe en la página de códigos OEM else { Write-Output '(sin salida)' }
+            # La redirección de cmd escribe en la página de códigos OEM.
+            if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem } else { Write-Output '(sin salida)' }
             Write-Output '------------------'
             Write-Output "Exit code: $code"
             "| ``$s`` | ``$code`` |" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
