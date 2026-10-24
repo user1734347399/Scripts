@@ -53,6 +53,13 @@ function Invoke-Copia {
     [pscustomobject]@{ Code = $code; Salida = $texto }
 }
 
+function Write-Anotacion {
+    # Publica un texto como anotacion de GitHub Actions (se puede leer por API aunque no se acceda al log)
+    param([string]$Titulo, [string]$Texto)
+    $t = ($Texto -replace '%', '%25') -replace "`r", '' -replace "`n", '%0A'
+    Write-Output "::notice title=$Titulo::$t"
+}
+
 function Set-Reemplazo {
     # Reemplazo de texto literal que falla si el texto no esta (evita probar una copia sin modificar)
     param([string]$Texto, [string]$Viejo, [string]$Nuevo)
@@ -85,6 +92,7 @@ try {
     $r2 = Invoke-Copia -Contenido $c2 -PsExe $Ps32 -TimeoutSeg 420
     Write-Output $r2.Salida
     Write-Output "Exit code: $($r2.Code)"
+    Write-Anotacion 'Paso 2 - modo prueba' ("Exit code: $($r2.Code)`n" + $r2.Salida)
     if ($r2.Code -ne 0 -or $r2.Salida -notmatch 'RESULTADO \(MODO PRUEBA\): descarga y extraccion OK') { $Fallos.Add('Modo prueba') }
     if ($r2.Salida -match 'Reinicio forzado programado') { $Fallos.Add('Modo prueba programo un reinicio (no deberia)') }
     Test-TiempoTotal
@@ -108,6 +116,7 @@ try {
     # Control: desde 32 bits, System32\msg.exe NO deberia verse (por eso se usa Sysnative)
     $ver32 = Invoke-Copia -Contenido "Write-Output ('System32 msg: ' + (Test-Path `"`$env:WINDIR\System32\msg.exe`")); Write-Output ('Sysnative msg: ' + (Test-Path `"`$env:WINDIR\Sysnative\msg.exe`"))" -PsExe $Ps32 -TimeoutSeg 30
     Write-Output "Control 32 bits -> $($ver32.Salida.Trim() -replace '\s+', ' | ')"
+    Write-Anotacion 'Paso 3 - reinicio' ("Exit code: $($r3.Code)`nshutdown /a: $($abort.ExitCode)`nControl 32 bits: $($ver32.Salida)`n" + $r3.Salida)
     Test-TiempoTotal
 }
 catch {
@@ -119,6 +128,8 @@ finally {
     $Temps | ForEach-Object { Remove-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue }
 }
 
+$sint = if ($Fallos -contains 'Sintaxis') { 'con errores' } else { 'OK' }
+Write-Anotacion 'Resumen' ("Sintaxis: $sint`nFallos: " + $(if ($Fallos.Count) { $Fallos -join '; ' } else { 'ninguno' }))
 if ($Fallos.Count -gt 0) {
     Write-Output ("FALLO: {0}" -f ($Fallos -join '; '))
     exit 1
