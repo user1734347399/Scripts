@@ -1,4 +1,4 @@
-<#
+﻿<#
 Objetivo:
     Script de prueba: muestra con qué identidad corre (whoami) y la versión de
     PowerShell, para verificar el contexto de ejecución (SYSTEM en Action1).

@@ -38,6 +38,8 @@ Windows PowerShell 5.1 por defecto.
    `$env:USERPROFILE` apunta a `C:\Windows\System32\config\systemprofile`, y las
    unidades de red mapeadas no existen.
 7. Compatibles con **Windows PowerShell 5.1** (no usar sintaxis exclusiva de PS 7).
+8. **Codificación UTF-8 con BOM** si el archivo tiene caracteres no ASCII (acentos, ñ):
+   PowerShell 5.1 lee los `.ps1` sin BOM como ANSI y rompe esos caracteres.
 
 ## Pruebas
 

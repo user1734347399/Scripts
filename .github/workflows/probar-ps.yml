@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -64,6 +64,11 @@ jobs:
               }
             } else {
               Write-Output "Sintaxis OK: $s"
+            }
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $s).Path)
+            $tieneBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+            if (-not $tieneBom -and ($bytes | Where-Object { $_ -gt 127 } | Select-Object -First 1)) {
+              Write-Output "::warning file=$s::Tiene caracteres no ASCII sin BOM UTF-8: PowerShell 5.1 los va a leer mal"
             }
             if ((Get-Content -LiteralPath $s -Raw) -notmatch '(?s)^\s*<#.*?Objetivo.*?#>') {
               Write-Output "::warning file=$s::Falta el encabezado <# Objetivo ... #>"
