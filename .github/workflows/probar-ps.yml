@@ -1,0 +1,127 @@
+name: Probar script PowerShell (como SYSTEM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Ruta del script a probar (relativa a la raíz del repo), p. ej. 00-Prueba.ps1'
+        required: true
+        default: '00-Prueba.ps1'
+      timeout_seg:
+        description: 'Timeout de ejecución como SYSTEM (segundos)'
+        required: false
+        default: '600'
+  push:
+    paths:
+      - '**.ps1'
+
+jobs:
+  probar:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determinar scripts a probar
+        id: scripts
+        shell: pwsh
+        env:
+          INPUT_SCRIPT: ${{ github.event.inputs.script }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $lista = @($env:INPUT_SCRIPT)
+          } elseif ($env:BEFORE -and $env:BEFORE -notmatch '^0+$') {
+            $lista = @(git diff --name-only --diff-filter=AMR $env:BEFORE $env:AFTER -- '*.ps1')
+          } else {
+            $lista = @(git diff-tree --no-commit-id --name-only --diff-filter=AMR -r $env:AFTER -- '*.ps1')
+          }
+          $lista = @($lista | Where-Object { $_ } | ForEach-Object { $_.Trim() })
+          foreach ($s in $lista) {
+            if (-not (Test-Path -LiteralPath $s -PathType Leaf)) { throw "No existe el script: $s" }
+          }
+          Write-Output "Scripts a probar: $($lista -join ', ')"
+          "lista=$($lista -join ';')" >> $env:GITHUB_OUTPUT
+
+      - name: Validar sintaxis (parser de Windows PowerShell 5.1)
+        if: steps.scripts.outputs.lista != ''
+        shell: powershell
+        env:
+          LISTA: ${{ steps.scripts.outputs.lista }}
+        run: |
+          $fallo = $false
+          foreach ($s in $env:LISTA.Split(';')) {
+            $tokens = $null; $errores = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $s).Path, [ref]$tokens, [ref]$errores)
+            if ($errores.Count -gt 0) {
+              $fallo = $true
+              Write-Output "::error file=$s::$($errores.Count) error(es) de sintaxis"
+              foreach ($e in $errores) {
+                Write-Output ("  {0} línea {1}, col {2}: {3}" -f $s, $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
+              }
+            } else {
+              Write-Output "Sintaxis OK: $s"
+            }
+            if ((Get-Content -LiteralPath $s -Raw) -notmatch '(?s)^\s*<#.*?Objetivo.*?#>') {
+              Write-Output "::warning file=$s::Falta el encabezado <# Objetivo ... #>"
+            }
+          }
+          if ($fallo) { exit 1 }
+
+      - name: Descargar PsExec
+        if: steps.scripts.outputs.lista != ''
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'PSTools.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'PSTools'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/PSTools.zip' -OutFile $zip -TimeoutSec 120
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          "PSEXEC=$(Join-Path $dir 'PsExec64.exe')" >> $env:GITHUB_ENV
+
+      - name: Ejecutar como SYSTEM (PsExec -s)
+        if: steps.scripts.outputs.lista != ''
+        shell: pwsh
+        env:
+          LISTA: ${{ steps.scripts.outputs.lista }}
+          TIMEOUT_SEG: ${{ github.event.inputs.timeout_seg || '600' }}
+        run: |
+          $timeoutMs = [int]$env:TIMEOUT_SEG * 1000
+          $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $fallo = $false
+          "| Script | Exit code |`n|---|---|" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          foreach ($s in $env:LISTA.Split(';')) {
+            $ruta = (Resolve-Path $s).Path
+            $id   = [guid]::NewGuid().ToString('N')
+            $log  = Join-Path $env:RUNNER_TEMP "salida_$id.txt"
+            $cmd  = Join-Path $env:RUNNER_TEMP "lanzar_$id.cmd"
+            # Wrapper .cmd: evita problemas de comillas con PsExec y redirige toda la salida a un archivo.
+            @(
+              '@echo off'
+              "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1"
+              'exit /b %ERRORLEVEL%'
+            ) | Set-Content -LiteralPath $cmd -Encoding ascii
+
+            Write-Output "===== $s (como SYSTEM, timeout $($env:TIMEOUT_SEG) s) ====="
+            $p = Start-Process -FilePath $env:PSEXEC -ArgumentList @('-accepteula', '-nobanner', '-s', 'cmd.exe', '/c', "`"$cmd`"") -NoNewWindow -PassThru
+            $null = $p.Handle  # necesario para leer ExitCode luego
+            if (-not $p.WaitForExit($timeoutMs)) {
+              Write-Output "::error file=$s::Timeout de $($env:TIMEOUT_SEG) s: se mata el proceso"
+              Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*$ruta*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              $code = 'TIMEOUT'
+            } else {
+              $code = $p.ExitCode
+            }
+
+            Write-Output '----- salida -----'
+            if (Test-Path $log) { Get-Content -LiteralPath $log } else { Write-Output '(sin salida)' }
+            Write-Output '------------------'
+            Write-Output "Exit code: $code"
+            "| ``$s`` | ``$code`` |" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            if ($code -ne 0) { $fallo = $true }
+          }
+          if ($fallo) { exit 1 }
