@@ -24,7 +24,7 @@ $Temps    = New-Object System.Collections.Generic.List[string]
 function Test-TiempoTotal {
     if ($reloj.Elapsed.TotalSeconds -gt $TiempoMaximoTotalSeg) {
         Write-Output "ERROR: se supero el tiempo maximo total ($TiempoMaximoTotalSeg s)."
-        & $Shutdown /a 2>$null
+        Start-Process -FilePath $Shutdown -ArgumentList '/a' -NoNewWindow -Wait -ErrorAction SilentlyContinue
         exit 2
     }
 }
@@ -99,7 +99,7 @@ try {
 
     # ---------- 3) Aviso + reinicio (simula instalacion OK, 32 bits) ----------
     Write-Output '== Paso 3: aviso + reinicio (simulando instalacion OK, PowerShell 32 bits) =='
-    & $Shutdown /a 2>$null   # por si quedo algo programado de antes
+    Start-Process -FilePath $Shutdown -ArgumentList '/a' -NoNewWindow -Wait   # por si quedo algo programado de antes
     $c3 = Set-Reemplazo $original '    # ---------- Exclusion mutua con la limpieza ----------' `
         "    `$InstaladoOk = `$true; `$ExitCode = 0; Write-Log 'PRUEBA: se simula instalacion OK'; return`r`n    # ---------- Exclusion mutua con la limpieza ----------"
     $r3 = Invoke-Copia -Contenido $c3 -PsExe $Ps32 -TimeoutSeg 90
@@ -121,6 +121,7 @@ try {
 }
 catch {
     Write-Output "ERROR: $($_.Exception.Message)"
+    Write-Anotacion 'Excepcion' ("$($_.Exception.Message) (linea $($_.InvocationInfo.ScriptLineNumber))")
     $Fallos.Add('Excepcion')
 }
 finally {
