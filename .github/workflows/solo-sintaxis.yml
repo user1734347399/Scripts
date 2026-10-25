@@ -114,9 +114,11 @@ jobs:
           $f = Join-Path $env:RUNNER_TEMP "hallazgos.txt"
           if (-not (Test-Path $f)) { "sin archivo de hallazgos" | Set-Content $f }
           $cuerpo = Get-Content $f -Raw
-          $body = @{ body = ("``````" + "`n" + $cuerpo + "`n" + "``````") } | ConvertTo-Json
-          $body | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input -
-          Write-Output "hallazgos publicados como commit comment"
+          $payload = @{ body = ("```" + "`n" + $cuerpo + "`n" + "```") } | ConvertTo-Json -Depth 3
+          $pj = Join-Path $env:RUNNER_TEMP "comment.json"
+          Set-Content -LiteralPath $pj -Value $payload -Encoding UTF8
+          gh api -X POST ("repos/" + $env:GITHUB_REPOSITORY + "/commits/" + $env:GITHUB_SHA + "/comments") --input $pj
+          Write-Output "hallazgos publicados"
 
       - name: 3) Ejecutar SOLO el payload aislado (corre el exe + captura, NO toca bcdedit)
         shell: powershell
