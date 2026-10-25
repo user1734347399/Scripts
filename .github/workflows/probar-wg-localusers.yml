@@ -30,21 +30,17 @@ jobs:
             @{ Name = "wgLocal2"; Pass = "Prueba#2026bB!" }
           )
 
-          # API CreateProfile: crea C:\Users\<u> y la entrada en ProfileList (igual que un primer login)
-          $sig = @'
-[DllImport("userenv.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-public static extern int CreateProfile([MarshalAs(UnmanagedType.LPWStr)] string pszUserSid, [MarshalAs(UnmanagedType.LPWStr)] string pszUserName, [Out][MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszProfilePath, uint cchProfilePath);
-'@
+          # API CreateProfile (userenv.dll): crea C:\Users\<u> y la entrada en ProfileList, igual que un primer login. Firma en una sola linea para no romper el YAML.
+          $sig = '[DllImport("userenv.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern int CreateProfile([MarshalAs(UnmanagedType.LPWStr)] string pszUserSid, [MarshalAs(UnmanagedType.LPWStr)] string pszUserName, [Out][MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszProfilePath, uint cchProfilePath);'
           $api = Add-Type -MemberDefinition $sig -Namespace WG -Name Prof -PassThru
 
           foreach ($u in $users) {
             net user $u.Name $u.Pass /add /y | Out-Null
-            # Queda SOLO en "Users" (limitado); nos aseguramos de que NO sea admin
             net localgroup "Administrators" $u.Name /delete 2>$null | Out-Null
             $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $u.Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
             $sb = New-Object System.Text.StringBuilder(260)
             $hr = $api::CreateProfile($sid, $u.Name, $sb, 260)
-            "Creado $($u.Name)  SID=$sid  perfil_hr=0x{0:X8}  ruta=$($sb.ToString())" -f $hr | Add-Content $out -Encoding utf8
+            ("Creado {0}  SID={1}  perfil_hr=0x{2:X8}  ruta={3}" -f $u.Name, $sid, $hr, $sb.ToString()) | Add-Content $out -Encoding utf8
           }
 
           "----- ProfileList S-1-5-21 visible para el script -----" | Add-Content $out -Encoding utf8
@@ -85,12 +81,12 @@ public static extern int CreateProfile([MarshalAs(UnmanagedType.LPWStr)] string 
           $opName = (Get-LocalGroup | Where-Object { $_.SID -eq 'S-1-5-32-556' }).Name
           "Miembros de '$opName' despues de correr el script:" | Add-Content $out -Encoding utf8
           try {
-            Get-LocalGroupMember -Group $opName | ForEach-Object { "   $($_.Name)  [$($_.SID)]" | Add-Content $out -Encoding utf8 }
-          } catch { "   (no se pudo enumerar: $($_.Exception.Message))" | Add-Content $out -Encoding utf8 }
+            Get-LocalGroupMember -Group $opName | ForEach-Object { ("   {0}  [{1}]" -f $_.Name, $_.SID) | Add-Content $out -Encoding utf8 }
+          } catch { ("   (no se pudo enumerar: {0})" -f $_.Exception.Message) | Add-Content $out -Encoding utf8 }
           try {
             $v = (Get-ItemProperty "HKLM:\Software\WireGuard" -Name LimitedOperatorUI -EA Stop).LimitedOperatorUI
             "Registro LimitedOperatorUI = $v" | Add-Content $out -Encoding utf8
-          } catch { "Registro: no existe la clave ($($_.Exception.Message))" | Add-Content $out -Encoding utf8 }
+          } catch { "Registro: no existe la clave" | Add-Content $out -Encoding utf8 }
           Get-Content $out | Write-Output
 
       - name: Commit salida
