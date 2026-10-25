@@ -36,7 +36,7 @@ $added        = "C:\Intel\SafeSvc-Added.txt"
 $nssm         = "C:\Intel\nssm.exe"
 $svc          = "CortexSafeSvc"
 $topeArmSeg   = 180            # tope global de la fase ARM (no cuelga Action1)
-$payloadTimeoutSeg = 120       # timeout de CADA exe
+# El timeout de CADA exe esta fijo en el worker ($timeoutMs=120000 => 120s)
 
 # --- Lista de payloads a correr EN ORDEN. Para ESET: agregar/cambiar una entrada. ---
 $payloads = @(
