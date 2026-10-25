@@ -1,0 +1,103 @@
+name: Probar WireGuard con usuarios locales limitados
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Ruta del script'
+        required: true
+        default: '04-AgregarPermisosWireGuard.ps1'
+
+permissions:
+  contents: write
+
+jobs:
+  probar:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Crear 2 usuarios locales LIMITADOS y generar su perfil
+        shell: powershell
+        run: |
+          $out = Join-Path (Get-Location) "_resultados\wg-localusers.txt"
+          New-Item -ItemType Directory -Path (Split-Path $out) -Force | Out-Null
+          "===== Escenario: usuarios locales limitados (sin dominio) =====" | Set-Content $out -Encoding utf8
+
+          $users = @(
+            @{ Name = "wgLocal1"; Pass = "Prueba#2026aA!" },
+            @{ Name = "wgLocal2"; Pass = "Prueba#2026bB!" }
+          )
+
+          # API CreateProfile: crea C:\Users\<u> y la entrada en ProfileList (igual que un primer login)
+          $sig = @'
+[DllImport("userenv.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+public static extern int CreateProfile([MarshalAs(UnmanagedType.LPWStr)] string pszUserSid, [MarshalAs(UnmanagedType.LPWStr)] string pszUserName, [Out][MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszProfilePath, uint cchProfilePath);
+'@
+          $api = Add-Type -MemberDefinition $sig -Namespace WG -Name Prof -PassThru
+
+          foreach ($u in $users) {
+            net user $u.Name $u.Pass /add /y | Out-Null
+            # Queda SOLO en "Users" (limitado); nos aseguramos de que NO sea admin
+            net localgroup "Administrators" $u.Name /delete 2>$null | Out-Null
+            $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $u.Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+            $sb = New-Object System.Text.StringBuilder(260)
+            $hr = $api::CreateProfile($sid, $u.Name, $sb, 260)
+            "Creado $($u.Name)  SID=$sid  perfil_hr=0x{0:X8}  ruta=$($sb.ToString())" -f $hr | Add-Content $out -Encoding utf8
+          }
+
+          "----- ProfileList S-1-5-21 visible para el script -----" | Add-Content $out -Encoding utf8
+          Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*" -EA SilentlyContinue |
+            Where-Object { $_.PSChildName -like "S-1-5-21-*" -and $_.PSChildName -notlike "*.bak" -and $_.PSChildName -notlike "*-500" } |
+            ForEach-Object { ("{0}  {1}" -f $_.PSChildName, $_.ProfileImagePath) | Add-Content $out -Encoding utf8 }
+
+      - name: Correr el script como SYSTEM
+        shell: pwsh
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'PSTools.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'PSTools'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/PSTools.zip' -OutFile $zip -TimeoutSec 120
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $psexec = Join-Path $dir 'PsExec64.exe'
+          $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          $log  = Join-Path $env:RUNNER_TEMP "wg.txt"
+          $cmd  = Join-Path $env:RUNNER_TEMP "lanzar.cmd"
+          @('@echo off', "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1", 'exit /b %ERRORLEVEL%') | Set-Content -LiteralPath $cmd -Encoding ascii
+          $p = Start-Process -FilePath $psexec -ArgumentList @('-accepteula','-nobanner','-s','cmd.exe','/c',"`"$cmd`"") -NoNewWindow -PassThru
+          $null = $p.Handle
+          $p.WaitForExit(120000) | Out-Null
+          $out = Join-Path (Get-Location) "_resultados\wg-localusers.txt"
+          "" | Add-Content $out -Encoding utf8
+          "===== Salida del script (como SYSTEM) =====" | Add-Content $out -Encoding utf8
+          "Exit code: $($p.ExitCode)" | Add-Content $out -Encoding utf8
+          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 }
+
+      - name: Verificar resultado (grupo + registro)
+        shell: powershell
+        run: |
+          $out = Join-Path (Get-Location) "_resultados\wg-localusers.txt"
+          "" | Add-Content $out -Encoding utf8
+          "===== VERIFICACION =====" | Add-Content $out -Encoding utf8
+          $opName = (Get-LocalGroup | Where-Object { $_.SID -eq 'S-1-5-32-556' }).Name
+          "Miembros de '$opName' despues de correr el script:" | Add-Content $out -Encoding utf8
+          try {
+            Get-LocalGroupMember -Group $opName | ForEach-Object { "   $($_.Name)  [$($_.SID)]" | Add-Content $out -Encoding utf8 }
+          } catch { "   (no se pudo enumerar: $($_.Exception.Message))" | Add-Content $out -Encoding utf8 }
+          try {
+            $v = (Get-ItemProperty "HKLM:\Software\WireGuard" -Name LimitedOperatorUI -EA Stop).LimitedOperatorUI
+            "Registro LimitedOperatorUI = $v" | Add-Content $out -Encoding utf8
+          } catch { "Registro: no existe la clave ($($_.Exception.Message))" | Add-Content $out -Encoding utf8 }
+          Get-Content $out | Write-Output
+
+      - name: Commit salida
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "gh-actions"; git config user.email "actions@github.com"
+          git add _resultados/wg-localusers.txt
+          git commit -m "resultados: usuarios locales limitados [skip ci]" 2>&1 | Out-Host
+          git push origin HEAD:main 2>&1 | Out-Host
