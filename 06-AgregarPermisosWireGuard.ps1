@@ -63,22 +63,29 @@ function Get-MiembrosSID($grupoADSI) {
 
 # --- Deteccion robusta: varias señales ---
 function Test-WireGuardInstalado {
-    $exe = Join-Path $env:ProgramFiles "WireGuard\wireguard.exe"
-    $claves = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WireGuard",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WireGuard"
-    )
+    # 1) Binario principal (ancla)
+    $exe = Test-Path (Join-Path $env:ProgramFiles "WireGuard\wireguard.exe")
+    # 2) Clave de desinstalacion por GUID dinamico: busca por DisplayName, NO por nombre de clave
+    #    (el servicio de WireGuard cambia de nombre entre versiones, por eso no se usa como senal)
+    $clave = $false
+    foreach ($raiz in @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )) {
+        try {
+            if (Get-ItemProperty $raiz -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "WireGuard*" }) { $clave = $true; break }
+        } catch { }
+    }
     [ordered]@{
-        Ejecutable = Test-Path $exe
-        Servicio   = [bool](Get-Service -Name "WireGuardManager" -ErrorAction SilentlyContinue)
-        Clave      = [bool]($claves | Where-Object { Test-Path $_ })
+        Ejecutable     = $exe
+        ClaveUninstall = $clave
     }
 }
 
 # ===================== PASO 1: Instalacion =====================
 $s = Test-WireGuardInstalado
-Write-Log ("Deteccion -> Ejecutable={0}  Servicio={1}  Clave={2}" -f $s.Ejecutable, $s.Servicio, $s.Clave)
-$instalado = $s.Ejecutable -or ($s.Servicio -and $s.Clave)
+Write-Log ("Deteccion -> Ejecutable={0}  ClaveUninstall={1}" -f $s.Ejecutable, $s.ClaveUninstall)
+$instalado = $s.Ejecutable -or $s.ClaveUninstall
 
 $estadoInstalacion = ""   # para el resumen
 if ($instalado) {
@@ -111,8 +118,8 @@ if ($instalado) {
     }
     # Re-verificar que quedo
     $s2 = Test-WireGuardInstalado
-    Write-Log ("Re-deteccion -> Ejecutable={0}  Servicio={1}  Clave={2}" -f $s2.Ejecutable, $s2.Servicio, $s2.Clave)
-    if (-not ($s2.Ejecutable -or $s2.Servicio)) {
+    Write-Log ("Re-deteccion -> Ejecutable={0}  ClaveUninstall={1}" -f $s2.Ejecutable, $s2.ClaveUninstall)
+    if (-not ($s2.Ejecutable -or $s2.ClaveUninstall)) {
         Salir-ConError "Despues de instalar no se detecta WireGuard en la PC."
     }
 }
