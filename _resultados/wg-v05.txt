@@ -1,0 +1,50 @@
+################  CASO 1: EXITO  ################
+(2 usuarios limitados nuevos, nada roto)
+Exit code: 0
+----- LO QUE VE EN PANTALLA -----
+
+Por favor espere...
+
+Permisos de WireGuard aplicados correctamente.
+
+2 usuarios agregados:
+  - jperez
+  - mlopez
+
+Clave de registro: OK
+Log: C:\ProgramData\IT\Wireguard\log.txt
+
+Falta reiniciar la PC.
+
+################  CASO 2: OBSERVACIONES  ################
+(los 2 ya estan + 1 perfil con SID que no resuelve)
+Exit code: 2
+----- LO QUE VE EN PANTALLA -----
+
+Por favor espere...
+
+Se completo con observaciones.
+
+2 ya tenian permisos:
+  - jperez
+  - mlopez
+
+1 no se pudo agregar:
+  - fantasma  (ver log)
+
+Clave de registro: OK
+Log: C:\ProgramData\IT\Wireguard\log.txt
+
+Falta reiniciar la PC.
+
+----- CONTENIDO DEL LOG INTERNO (C:\ProgramData\IT\Wireguard\log.txt) -----
+===== WireGuard - Agregar permisos (v05) =====
+2026-10-25 21:50:09  Equipo: runnervmdaln5  Contexto: NT AUTHORITY\SYSTEM
+2026-10-25 21:50:09  Grupo destino: Network Configuration Operators
+2026-10-25 21:50:09  Perfiles encontrados: 3
+2026-10-25 21:50:09  jperez -> ya tenia permisos
+2026-10-25 21:50:09  mlopez -> ya tenia permisos
+2026-10-25 21:50:09  fantasma -> agregado
+2026-10-25 21:50:09  Registro LimitedOperatorUI = 1
+2026-10-25 21:50:09  fantasma -> VERIFICACION: no quedo en el grupo
+2026-10-25 21:50:09  Resultado: 0 agregados, 2 ya tenian, 1 con error
