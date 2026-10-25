@@ -18,32 +18,75 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Sembrar SID huerfano en grupos locales (reproduce el escenario del error 1789)
+      - name: Harness del fix (siembra SID huerfano y compara nuevo vs viejo)
         shell: powershell
         run: |
-          # Un SID de dominio ficticio que NO resuelve: es justo lo que hacia
-          # reventar a Get-LocalGroupMember con "codigo de error = 1789".
+          $out = Join-Path (Get-Location) "_resultados\wireguard-salida.txt"
+          New-Item -ItemType Directory -Path (Split-Path $out) -Force | Out-Null
+          "===== Harness del fix 1789 =====" | Set-Content $out -Encoding utf8
+
+          $opSID = "S-1-5-32-556"   # Operadores de Red
+          $opName = (Get-LocalGroup | Where-Object { $_.SID -eq $opSID }).Name
+          "Grupo objetivo: $opName" | Add-Content $out -Encoding utf8
+
+          # 1) Sembrar un SID de dominio ficticio que NO resuelve
           $sidFantasma = "S-1-5-21-1111111111-2222222222-3333333333-1234"
-          foreach ($g in @("S-1-5-32-544","S-1-5-32-556")) {
-            try {
-              $gName = (Get-LocalGroup | Where-Object { $_.SID -eq $g }).Name
-              $grp = [ADSI]"WinNT://$env:COMPUTERNAME/$gName,group"
-              $grp.Add("WinNT://$sidFantasma")
-              Write-Output "Sembrado SID huerfano en $gName"
-            } catch {
-              Write-Output "No se pudo sembrar en $g : $($_.Exception.Message)"
-            }
-          }
-          # Prueba de control: confirmar que el cmdlet VIEJO revienta con este SID
-          Write-Output "--- Control: Get-LocalGroupMember sobre Administradores ---"
           try {
-            Get-LocalGroupMember -Group (Get-LocalGroup | Where-Object { $_.SID -eq 'S-1-5-32-544' }).Name | Out-Null
-            Write-Output "Get-LocalGroupMember NO fallo"
+            ([ADSI]"WinNT://$env:COMPUTERNAME/$opName,group").Add("WinNT://$sidFantasma")
+            "Sembrado SID huerfano $sidFantasma en $opName" | Add-Content $out -Encoding utf8
           } catch {
-            Write-Output "Get-LocalGroupMember FALLO (esperado): $($_.Exception.Message)"
+            "No se pudo sembrar (se prueba igual): $($_.Exception.Message)" | Add-Content $out -Encoding utf8
           }
 
-      - name: Ejecutar script como SYSTEM y capturar salida
+          # 2) CONTROL: el cmdlet VIEJO sobre el grupo con el SID huerfano
+          "----- VIEJO: Get-LocalGroupMember -----" | Add-Content $out -Encoding utf8
+          try {
+            $m = Get-LocalGroupMember -Group $opName -ErrorAction Stop
+            "Get-LocalGroupMember OK, miembros: $($m.Count)" | Add-Content $out -Encoding utf8
+          } catch {
+            "Get-LocalGroupMember FALLO: $($_.Exception.Message)" | Add-Content $out -Encoding utf8
+          }
+
+          # 3) NUEVO: la funcion Get-MiembrosSID del script
+          function Get-MiembrosSID($grupoADSI) {
+            $sids = @()
+            try { $miembros = @($grupoADSI.Invoke("Members")) } catch { $miembros = @() }
+            foreach ($mm in $miembros) {
+              try {
+                $bytes = $mm.GetType().InvokeMember("objectSid", 'GetProperty', $null, $mm, $null)
+                $sids += (New-Object System.Security.Principal.SecurityIdentifier($bytes, 0)).Value
+              } catch { }
+            }
+            return $sids
+          }
+          "----- NUEVO: Get-MiembrosSID (ADSI) -----" | Add-Content $out -Encoding utf8
+          try {
+            $grpADSI = [ADSI]"WinNT://$env:COMPUTERNAME/$opName,group"
+            $sids = Get-MiembrosSID $grpADSI
+            "Get-MiembrosSID OK, SIDs devueltos: $($sids.Count)" | Add-Content $out -Encoding utf8
+            foreach ($s in $sids) { "   $s" | Add-Content $out -Encoding utf8 }
+            if ($sids -contains $sidFantasma) { "El SID huerfano aparece en la lista (no rompio la enumeracion)" | Add-Content $out -Encoding utf8 }
+          } catch {
+            "Get-MiembrosSID FALLO: $($_.Exception.Message)" | Add-Content $out -Encoding utf8
+          }
+
+          # 4) Write + readback del registro (como hace el script)
+          "----- Registro -----" | Add-Content $out -Encoding utf8
+          try {
+            $regPath = "HKLM:\Software\WireGuard"
+            if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+            New-ItemProperty -Path $regPath -Name "LimitedOperatorUI" -Value 1 -PropertyType DWORD -Force | Out-Null
+            $v = (Get-ItemProperty -Path $regPath -Name LimitedOperatorUI).LimitedOperatorUI
+            "LimitedOperatorUI = $v (OK)" | Add-Content $out -Encoding utf8
+          } catch {
+            "Registro FALLO: $($_.Exception.Message)" | Add-Content $out -Encoding utf8
+          }
+
+          # limpiar el SID sembrado
+          try { ([ADSI]"WinNT://$env:COMPUTERNAME/$opName,group").Remove("WinNT://$sidFantasma") } catch {}
+          Get-Content $out | Write-Output
+
+      - name: Ejecutar el script completo como SYSTEM
         shell: pwsh
         env:
           SCRIPT: ${{ github.event.inputs.script }}
@@ -53,36 +96,19 @@ jobs:
           Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/PSTools.zip' -OutFile $zip -TimeoutSec 120
           Expand-Archive -Path $zip -DestinationPath $dir -Force
           $psexec = Join-Path $dir 'PsExec64.exe'
-
           $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
           $ruta = (Resolve-Path $env:SCRIPT).Path
           $log  = Join-Path $env:RUNNER_TEMP "wg.txt"
           $cmd  = Join-Path $env:RUNNER_TEMP "lanzar.cmd"
-          @(
-            '@echo off'
-            "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1"
-            'exit /b %ERRORLEVEL%'
-          ) | Set-Content -LiteralPath $cmd -Encoding ascii
-
+          @('@echo off', "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1", 'exit /b %ERRORLEVEL%') | Set-Content -LiteralPath $cmd -Encoding ascii
           $p = Start-Process -FilePath $psexec -ArgumentList @('-accepteula','-nobanner','-s','cmd.exe','/c',"`"$cmd`"") -NoNewWindow -PassThru
           $null = $p.Handle
           $p.WaitForExit(120000) | Out-Null
-          $code = $p.ExitCode
-
-          $dest = Join-Path (Get-Location) "_resultados"
-          New-Item -ItemType Directory -Path $dest -Force | Out-Null
-          $out = Join-Path $dest "wireguard-salida.txt"
-          "===== Ejecucion como SYSTEM de $env:SCRIPT =====" | Set-Content $out -Encoding utf8
-          "Exit code: $code" | Add-Content $out -Encoding utf8
-          "----- STDOUT + STDERR (todo lo que se veria en consola) -----" | Add-Content $out -Encoding utf8
-          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 } else { "(sin salida)" | Add-Content $out -Encoding utf8 }
-          "----- Verificacion registro -----" | Add-Content $out -Encoding utf8
-          try {
-            $v = Get-ItemProperty -Path "HKLM:\Software\WireGuard" -Name LimitedOperatorUI -ErrorAction Stop
-            "LimitedOperatorUI = $($v.LimitedOperatorUI)" | Add-Content $out -Encoding utf8
-          } catch { "No se pudo leer la clave: $($_.Exception.Message)" | Add-Content $out -Encoding utf8 }
-
-          Write-Output "Exit code del script: $code"
+          $out = Join-Path (Get-Location) "_resultados\wireguard-salida.txt"
+          "" | Add-Content $out -Encoding utf8
+          "===== Ejecucion del SCRIPT COMPLETO como SYSTEM =====" | Add-Content $out -Encoding utf8
+          "Exit code: $($p.ExitCode)" | Add-Content $out -Encoding utf8
+          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 }
 
       - name: Commitear salida
         if: always()
@@ -91,5 +117,5 @@ jobs:
           git config user.name "gh-actions"
           git config user.email "actions@github.com"
           git add _resultados/wireguard-salida.txt
-          git commit -m "resultados: salida prueba WireGuard [skip ci]" 2>&1 | Out-Host
+          git commit -m "resultados: harness + script WireGuard [skip ci]" 2>&1 | Out-Host
           git push origin HEAD:main 2>&1 | Out-Host
