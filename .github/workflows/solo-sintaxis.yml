@@ -60,6 +60,8 @@ jobs:
         env:
           SCRIPT: ${{ github.event.inputs.script }}
         run: |
+          $rep = Join-Path $env:RUNNER_TEMP "hallazgos.txt"
+          "=== PSScriptAnalyzer ===" | Set-Content $rep -Encoding UTF8
           Set-PSRepository PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
           if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
             Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
@@ -78,7 +80,7 @@ jobs:
               if ($sev -eq 'Error') { Write-Output "::error::$linea"; $hayError = $true }
               elseif ($sev -eq 'Warning') { Write-Output "::warning::$linea" }
               else { Write-Output $linea }
-              ("- **{0}** `{1}` L{2}: {3} ({4})" -f $sev, $titulo, $r.Line, $r.Message, $r.RuleName) | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+              ("[{0}] {1} L{2}: {3} ({4})" -f $sev, $titulo, $r.Line, $r.Message, $r.RuleName) | Out-File -Append -FilePath (Join-Path $env:RUNNER_TEMP "hallazgos.txt") -Encoding utf8
             }
             return $hayError
           }
@@ -99,8 +101,17 @@ jobs:
             if (Mostrar $resN "HERE-STRING EMBEBIDO #$i") { $huboError = $true }
           }
 
-          if ($huboError) { Write-Output "RESULTADO PSScriptAnalyzer: HAY ERRORES"; exit 1 }
-          Write-Output "RESULTADO PSScriptAnalyzer: sin errores (los warnings no frenan)"
+          if ($huboError) { "RESULTADO: HAY ERRORES" | Out-File -Append (Join-Path $env:RUNNER_TEMP "hallazgos.txt"); "HAYERROR=1" >> $env:GITHUB_ENV }
+          else { "RESULTADO: sin errores" | Out-File -Append (Join-Path $env:RUNNER_TEMP "hallazgos.txt"); "HAYERROR=0" >> $env:GITHUB_ENV }
+          Write-Output "PSScriptAnalyzer termino (ver artifact hallazgos)"
+
+      - name: 2b) Subir hallazgos como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hallazgos
+          path: ${{ runner.temp }}/hallazgos.txt
+          if-no-files-found: ignore
 
       - name: 3) Ejecutar SOLO el payload aislado (corre el exe + captura, NO toca bcdedit)
         shell: powershell
