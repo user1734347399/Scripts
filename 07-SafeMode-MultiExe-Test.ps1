@@ -33,7 +33,8 @@ $log          = "C:\Intel\SafeSvc-Arm.txt"
 $workerPath   = "C:\Intel\SafeSvc-Worker.ps1"
 $payloadsJson = "C:\Intel\SafeSvc-Payloads.json"
 $added        = "C:\Intel\SafeSvc-Added.txt"
-$nssm         = "C:\Intel\nssm.exe"
+$engineDir    = "C:\ProgramData\IT\SafeEngine"   # NSSM vive aca (persistente: borrar C:\Intel no lo toca)
+$nssm         = "$engineDir\nssm.exe"
 $svc          = "CortexSafeSvc"
 $topeArmSeg   = 180            # tope global de la fase ARM (no cuelga Action1)
 # El timeout de CADA exe esta fijo en el worker ($timeoutMs=120000 => 120s)
@@ -58,16 +59,18 @@ function TopeVencido { return ((New-TimeSpan -Start $armInicio -End (Get-Date)).
 
 $SYS = "$env:windir\System32"
 
-# ================== conseguir NSSM ==================
+# ================== conseguir NSSM (persistente en $engineDir) ==================
+New-Item -ItemType Directory -Path $engineDir -Force -EA SilentlyContinue | Out-Null
 if(-not (Test-Path $nssm)){
   try{
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile "C:\Intel\nssm.zip" -UseBasicParsing -TimeoutSec 60
-    Expand-Archive "C:\Intel\nssm.zip" "C:\Intel\nssm_tmp" -Force
-    Copy-Item "C:\Intel\nssm_tmp\nssm-2.24\win64\nssm.exe" $nssm -Force
-    Log "NSSM descargado OK"
-  }catch{ Log "ERROR: no pude descargar NSSM ($_). Pone nssm.exe en C:\Intel y re-corre. ABORTO."; exit 1 }
-}else{ Log "NSSM ya estaba en $nssm" }
+    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile "$engineDir\nssm.zip" -UseBasicParsing -TimeoutSec 60
+    Expand-Archive "$engineDir\nssm.zip" "$engineDir\nssm_tmp" -Force
+    Copy-Item "$engineDir\nssm_tmp\nssm-2.24\win64\nssm.exe" $nssm -Force
+    Remove-Item "$engineDir\nssm.zip","$engineDir\nssm_tmp" -Recurse -Force -EA SilentlyContinue
+    Log "NSSM descargado OK en $nssm"
+  }catch{ Log "ERROR: no pude descargar NSSM ($_). Pone nssm.exe en $nssm y re-corre. ABORTO."; exit 1 }
+}else{ Log "NSSM ya estaba en $nssm (persistente)" }
 
 if(TopeVencido){ Log "ABORTO: tope de tiempo del ARM vencido en descarga NSSM."; exit 1 }
 
