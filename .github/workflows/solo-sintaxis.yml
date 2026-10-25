@@ -8,6 +8,9 @@ on:
         required: true
         default: '06-SafeMode-RunExe-Test.ps1'
 
+permissions:
+  contents: write
+
 jobs:
   sintaxis:
     runs-on: windows-latest
