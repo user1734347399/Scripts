@@ -31,7 +31,7 @@
 # ================== CONFIG ==================
 $log          = "C:\Intel\SafeSvc-Arm.txt"
 $workerPath   = "C:\Intel\SafeSvc-Worker.ps1"
-$payloadsJson = "C:\Intel\SafeSvc-Payloads.json"
+$payloadsFile = "C:\Intel\SafeSvc-Payloads.txt"   # formato por linea: Exe|Args|Log
 $added        = "C:\Intel\SafeSvc-Added.txt"
 $engineDir    = "C:\ProgramData\IT\SafeEngine"   # NSSM vive aca (persistente: borrar C:\Intel no lo toca)
 $nssm         = "$engineDir\nssm.exe"
@@ -74,9 +74,11 @@ if(-not (Test-Path $nssm)){
 
 if(TopeVencido){ Log "ABORTO: tope de tiempo del ARM vencido en descarga NSSM."; exit 1 }
 
-# ================== escribir payloads a JSON (worker los lee de ahi) ==================
-($payloads | ConvertTo-Json -Depth 3) | Set-Content $payloadsJson -Encoding UTF8
-Log "payloads escritos en $payloadsJson ($($payloads.Count) exe)"
+# ================== escribir payloads a archivo de lineas (Exe|Args|Log) ==================
+# Formato simple por linea: evita bugs de ConvertTo-Json/ConvertFrom-Json en PS 5.1.
+$lineas = foreach($p in $payloads){ ($p.Exe + "|" + $p.Args + "|" + $p.Log) }
+$lineas | Set-Content $payloadsFile -Encoding UTF8
+Log "payloads escritos en $payloadsFile ($($payloads.Count) exe)"
 
 # ================== proteger agentes remotos en Safe Mode con Red ==================
 $svcKey="HKLM:\SYSTEM\CurrentControlSet\Services"
@@ -104,7 +106,7 @@ $worker = @'
 $log="C:\Intel\SafeSvc-Worker.txt"
 $svc="CortexSafeSvc"
 $added="C:\Intel\SafeSvc-Added.txt"
-$payloadsJson="C:\Intel\SafeSvc-Payloads.json"
+$payloadsFile="C:\Intel\SafeSvc-Payloads.txt"
 $SYS="$env:windir\System32"
 $timeoutMs=120000
 New-Item -ItemType Directory -Path "C:\Intel" -Force -EA SilentlyContinue | Out-Null
@@ -144,12 +146,17 @@ $rd = & "$SYS\bcdedit.exe" /deletevalue safeboot 2>&1
 Log ("DESARMADO safeboot al inicio: " + ($rd -join ' '))
 
 try{
-  $payloads = @(Get-Content $payloadsJson -Raw -EA SilentlyContinue | ConvertFrom-Json)
+  $lineas = @(Get-Content $payloadsFile -EA SilentlyContinue | Where-Object { $_ -and ($_ -notmatch '^\s*#') })
+  $total = $lineas.Count
   $n=0
-  foreach($pl in $payloads){
+  foreach($linea in $lineas){
     $n++
-    Log ("----- PAYLOAD " + $n + "/" + $payloads.Count + " -----")
-    CorrerExe $pl.Exe $pl.Args $pl.Log
+    $partes = $linea -split '\|', 3
+    $exe  = $partes[0].Trim()
+    $arg  = if($partes.Count -ge 2){ $partes[1] } else { "" }
+    $logS = if($partes.Count -ge 3){ $partes[2].Trim() } else { "C:\Intel\SafeSvc-payload-$n.txt" }
+    Log ("----- PAYLOAD " + $n + "/" + $total + " -----")
+    CorrerExe $exe $arg $logS
   }
 }
 catch{ Log "ERROR en payloads: $_" }
