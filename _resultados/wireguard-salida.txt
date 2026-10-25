@@ -1,0 +1,10 @@
+===== Ejecucion como SYSTEM de 04-AgregarPermisosWireGuard.ps1 =====
+Exit code: 0
+----- STDOUT + STDERR (todo lo que se veria en consola) -----
+
+1 Por favor espere
+
+2 Por favor espere
+AVISO: No se encontraron usuarios validos
+----- Verificacion registro -----
+No se pudo leer la clave: Cannot find path 'HKLM:\Software\WireGuard' because it does not exist.
