@@ -105,13 +105,18 @@ jobs:
           else { "RESULTADO: sin errores" | Out-File -Append (Join-Path $env:RUNNER_TEMP "hallazgos.txt"); "HAYERROR=0" >> $env:GITHUB_ENV }
           Write-Output "PSScriptAnalyzer termino (ver artifact hallazgos)"
 
-      - name: 2b) Subir hallazgos como artifact
+      - name: 2b) Publicar hallazgos como commit comment (legible por REST)
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hallazgos
-          path: ${{ runner.temp }}/hallazgos.txt
-          if-no-files-found: ignore
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP "hallazgos.txt"
+          if (-not (Test-Path $f)) { "sin archivo de hallazgos" | Set-Content $f }
+          $cuerpo = Get-Content $f -Raw
+          $body = @{ body = ("``````" + "`n" + $cuerpo + "`n" + "``````") } | ConvertTo-Json
+          $body | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input -
+          Write-Output "hallazgos publicados como commit comment"
 
       - name: 3) Ejecutar SOLO el payload aislado (corre el exe + captura, NO toca bcdedit)
         shell: powershell
