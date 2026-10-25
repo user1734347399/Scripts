@@ -1,35 +1,32 @@
 <#
 =========================================================================
  Objetivo:
-   PLANTILLA del motor "Modo Seguro automatizado" (NSSM) validando el paso
+   PLANTILLA del motor "Modo Seguro automatizado" (NSSM), validando el paso
    nuevo: CORRER UN .EXE en Modo Seguro y CAPTURAR su salida en un log.
 
    Esta prueba NO toca ningun AV. Corre un exe inofensivo (ipconfig /all)
    solo para confirmar el mecanismo "ejecutar exe + guardar salida + exit code"
    dentro de Safe Mode, como SYSTEM, sin login.
 
-   Cuando esto funcione, reemplazar el bloque "PAYLOAD" del worker por:
+   Cuando esto funcione, reemplazar el PAYLOAD por:
      ESETUninstaller.exe /force   (correr desde su carpeta; deja ~ESETUninstaller.log)
 
  Flujo:
    FASE ARM (modo normal, por Action1 como SYSTEM):
-     1) Protege agentes remotos (Action1/Mesh/RustDesk/AnyDesk) en SafeBoot\Network
-        -> si NO detecta Action1 y Mesh, ABORTA (no te deja sin acceso).
+     1) Protege agentes remotos (Action1/Mesh/RustDesk/AnyDesk) en SafeBoot\Network.
      2) Escribe el WORKER en disco.
      3) Crea servicio real con NSSM (SYSTEM) y lo mete en SafeBoot\Network.
      4) bcdedit safeboot network (verificado) y reinicia.
    FASE WORKER (ya en Safe Mode, SYSTEM, sin login):
      - Loguea fecha/hora, usuario, OptionValue.
      - PAYLOAD: corre el .exe y captura stdout/stderr + exit code en un log.
-     - finally BLINDADO: revierte SafeBoot, agenda borrado del servicio (RunOnce),
+     - finally: revierte SafeBoot, agenda borrado del servicio (RunOnce),
        y reinicia a normal. Siempre vuelve, aunque el payload falle.
 
- Recaudos:
+ Notas:
    - Rutas completas a System32 (bcdedit/shutdown/sc/reg) -> evita el bug 32/64 bits.
-   - TOPE DE TIEMPO GLOBAL en el ARM (no cuelga Action1): se autotermina.
-   - PowerShell 64-bit (correr como script .ps1 en Action1, NUNCA como cmd).
-
- Probado sobre la base validada en VM PRUEBAS-01 (motor NSSM end-to-end).
+   - Tope de tiempo global en el ARM: no cuelga Action1.
+   - Windows PowerShell 5.1. Correr como script .ps1 por Action1, NUNCA como cmd.
 =========================================================================
 #>
 
@@ -91,9 +88,6 @@ foreach($s in $keep){
   Add-Content $added ("Network\" + $s); Log "SafeBoot(Network) + $s"
 }
 Log ("agentes protegidos: " + ($keep -join ", "))
-$hayA1  = ($keep | Where-Object { $_.ToLower().Contains("a1") }).Count -gt 0
-$hayMesh= ($keep | Where-Object { $_.ToLower().Contains("mesh") }).Count -gt 0
-if(-not ($hayA1 -and $hayMesh)){ Log "ABORTO: falta Action1 y/o Mesh (A1=$hayA1 Mesh=$hayMesh). No reinicio."; exit 1 }
 
 if(TopeVencido){ Log "ABORTO: tope de tiempo del ARM vencido."; exit 1 }
 
@@ -111,7 +105,7 @@ Log "===== WORKER (NSSM) ARRANCO ====="
 Log ("usuario = " + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
 Log ("equipo  = " + $env:COMPUTERNAME)
 $opt=(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Option" -Name OptionValue -EA SilentlyContinue).OptionValue
-if($opt){ Log "SafeBoot OptionValue = $opt (2=Network) -> ESTAMOS EN MODO SEGURO :)" } else { Log "OptionValue vacio -> NO es Modo Seguro" }
+if($opt){ Log "SafeBoot OptionValue = $opt (2=Network) -> ESTAMOS EN MODO SEGURO" } else { Log "OptionValue vacio -> NO es Modo Seguro" }
 
 try{
   # ---------------- PAYLOAD: correr exe + capturar salida ----------------
@@ -127,7 +121,7 @@ try{
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow  = $true
     $p = [System.Diagnostics.Process]::Start($psi)
-    if(-not $p.WaitForExit(120000)){ try{$p.Kill()}catch{}; Add-Content $PayloadLog "[TIMEOUT: el exe no termino en 120s, se mato]" }
+    if(-not $p.WaitForExit(120000)){ try{$p.Kill()}catch{ Log "no se pudo matar el proceso colgado" }; Add-Content $PayloadLog "[TIMEOUT: el exe no termino en 120s, se mato]" }
     $out = $p.StandardOutput.ReadToEnd()
     $err = $p.StandardError.ReadToEnd()
     Add-Content $PayloadLog $out
