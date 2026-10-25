@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       script:
-        description: 'Ruta del script a validar (solo parseo, NO se ejecuta)'
+        description: 'Ruta del script a validar (NO se ejecuta el flujo destructivo)'
         required: true
         default: '06-SafeMode-RunExe-Test.ps1'
 
 jobs:
   sintaxis:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v5
 
-      - name: Validar sintaxis del script y de sus here-strings embebidos
+      - name: 1) Sintaxis (parser PS 5.1) - principal + here-strings embebidos
         shell: powershell
         env:
           SCRIPT: ${{ github.event.inputs.script }}
@@ -24,50 +24,113 @@ jobs:
           $ruta = (Resolve-Path $env:SCRIPT).Path
           Write-Output "===== Validando: $env:SCRIPT ====="
 
-          # 1) Parsear el script principal
           $tokens = $null; $errores = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile($ruta, [ref]$tokens, [ref]$errores)
           if ($errores.Count -gt 0) {
             $fallo = $true
             Write-Output "::error::SCRIPT PRINCIPAL: $($errores.Count) error(es)"
-            foreach ($e in $errores) {
-              Write-Output ("  linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
-            }
-          } else {
-            Write-Output "OK: sintaxis del script principal"
-          }
+            foreach ($e in $errores) { Write-Output ("  linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message) }
+          } else { Write-Output "OK: sintaxis del script principal" }
 
-          # 2) Extraer y parsear cada here-string de un solo-cuota @' ... '@ (los bloques embebidos)
           $raw = Get-Content -LiteralPath $ruta -Raw
           $rx = [regex]"(?s)@'\r?\n(.*?)\r?\n'@"
           $m = $rx.Matches($raw)
           Write-Output ("Here-strings embebidos encontrados: " + $m.Count)
           $i = 0
           foreach ($match in $m) {
-            $i++
-            $contenido = $match.Groups[1].Value
+            $i++; $contenido = $match.Groups[1].Value
             $tk = $null; $er = $null
             [void][System.Management.Automation.Language.Parser]::ParseInput($contenido, [ref]$tk, [ref]$er)
             if ($er.Count -gt 0) {
               $fallo = $true
               Write-Output "::error::HERE-STRING #$i : $($er.Count) error(es)"
-              foreach ($e in $er) {
-                Write-Output ("  (dentro del bloque) linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
-              }
-            } else {
-              Write-Output "OK: here-string embebido #$i (parsea como script valido)"
-            }
+              foreach ($e in $er) { Write-Output ("  (bloque) linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message) }
+            } else { Write-Output "OK: here-string embebido #$i" }
           }
 
-          # 3) BOM / no-ASCII
           $bytes = [IO.File]::ReadAllBytes($ruta)
-          $tieneBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-          $tieneNoAscii = [bool]($bytes | Where-Object { $_ -gt 127 } | Select-Object -First 1)
-          if ($tieneNoAscii -and -not $tieneBom) {
-            Write-Output "::warning::Tiene caracteres no ASCII sin BOM UTF-8 (PS 5.1 los lee mal)"
-          } else {
-            Write-Output "OK: codificacion (BOM=$tieneBom, noASCII=$tieneNoAscii)"
+          $bom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+          $noAscii = [bool]($bytes | Where-Object { $_ -gt 127 } | Select-Object -First 1)
+          if ($noAscii -and -not $bom) { Write-Output "::warning::Caracteres no ASCII sin BOM UTF-8 (PS 5.1 los lee mal)" } else { Write-Output "OK: codificacion (BOM=$bom noASCII=$noAscii)" }
+          if ($fallo) { Write-Output "RESULTADO SINTAXIS: ERRORES"; exit 1 }
+          Write-Output "RESULTADO SINTAXIS: OK"
+
+      - name: 2) Analisis estatico (PSScriptAnalyzer) - principal + worker embebido
+        shell: powershell
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+          }
+          Import-Module PSScriptAnalyzer
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          $huboError = $false
+
+          function Mostrar($res, $titulo) {
+            Write-Output "----- $titulo -----"
+            if (-not $res) { Write-Output "  (sin observaciones)"; return $false }
+            $hayError = $false
+            foreach ($r in $res) {
+              $sev = $r.Severity
+              $linea = ("  [{0}] linea {1}: {2} ({3})" -f $sev, $r.Line, $r.Message, $r.RuleName)
+              if ($sev -eq 'Error') { Write-Output "::error::$linea"; $hayError = $true }
+              elseif ($sev -eq 'Warning') { Write-Output "::warning::$linea" }
+              else { Write-Output $linea }
+            }
+            return $hayError
           }
 
-          if ($fallo) { Write-Output "RESULTADO: HAY ERRORES DE SINTAXIS"; exit 1 }
-          Write-Output "RESULTADO: SINTAXIS OK (principal + embebidos)"
+          # a) sobre el script principal
+          $res1 = Invoke-ScriptAnalyzer -Path $ruta -Severity Error,Warning -ErrorAction SilentlyContinue
+          if (Mostrar $res1 "SCRIPT PRINCIPAL") { $huboError = $true }
+
+          # b) sobre cada worker embebido (lo extraigo a archivo temporal y lo analizo)
+          $raw = Get-Content -LiteralPath $ruta -Raw
+          $rx = [regex]"(?s)@'\r?\n(.*?)\r?\n'@"
+          $i = 0
+          foreach ($match in $rx.Matches($raw)) {
+            $i++
+            $tmp = Join-Path $env:RUNNER_TEMP ("embebido_$i.ps1")
+            Set-Content -LiteralPath $tmp -Value $match.Groups[1].Value -Encoding UTF8
+            $resN = Invoke-ScriptAnalyzer -Path $tmp -Severity Error,Warning -ErrorAction SilentlyContinue
+            if (Mostrar $resN "HERE-STRING EMBEBIDO #$i") { $huboError = $true }
+          }
+
+          if ($huboError) { Write-Output "RESULTADO PSScriptAnalyzer: HAY ERRORES"; exit 1 }
+          Write-Output "RESULTADO PSScriptAnalyzer: sin errores (los warnings no frenan)"
+
+      - name: 3) Ejecutar SOLO el payload aislado (corre el exe + captura, NO toca bcdedit)
+        shell: powershell
+        run: |
+          # Replica exacta de la logica PAYLOAD del worker, sobre un exe inofensivo,
+          # para probar ProcessStartInfo + timeout + captura + exit code en Windows real.
+          $PayloadExe  = "C:\Windows\System32\ipconfig.exe"
+          $PayloadArgs = "/all"
+          $PayloadLog  = Join-Path $env:RUNNER_TEMP "payload.txt"
+
+          "==== PAYLOAD $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') :: $PayloadExe $PayloadArgs ====" | Set-Content $PayloadLog -Encoding UTF8
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName  = $PayloadExe
+          $psi.Arguments = $PayloadArgs
+          $psi.WorkingDirectory = (Split-Path -Parent $PayloadExe)
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow  = $true
+          $p = [System.Diagnostics.Process]::Start($psi)
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch {}; Add-Content $PayloadLog "[TIMEOUT]" }
+          $out = $p.StandardOutput.ReadToEnd()
+          $err = $p.StandardError.ReadToEnd()
+          Add-Content $PayloadLog $out
+          if ($err) { Add-Content $PayloadLog ("[STDERR]`r`n" + $err) }
+          Add-Content $PayloadLog ("[EXIT CODE] " + $p.ExitCode)
+
+          Write-Output "ExitCode del payload: $($p.ExitCode)"
+          Write-Output "Tamano de la salida capturada: $((Get-Item $PayloadLog).Length) bytes"
+          Write-Output "----- primeras lineas capturadas -----"
+          Get-Content $PayloadLog -TotalCount 12
+          if ($p.ExitCode -ne 0) { Write-Output "::error::El payload devolvio exit code distinto de 0"; exit 1 }
+          if ((Get-Item $PayloadLog).Length -lt 50) { Write-Output "::error::No se capturo salida (log casi vacio)"; exit 1 }
+          Write-Output "RESULTADO PAYLOAD: OK (corrio, capturo salida y exit 0)"
