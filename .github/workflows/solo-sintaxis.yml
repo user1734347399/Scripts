@@ -74,10 +74,11 @@ jobs:
             $hayError = $false
             foreach ($r in $res) {
               $sev = $r.Severity
-              $linea = ("  [{0}] linea {1}: {2} ({3})" -f $sev, $r.Line, $r.Message, $r.RuleName)
+              $linea = ("  [{0}] {1} linea {2}: {3} ({4})" -f $sev, $titulo, $r.Line, $r.Message, $r.RuleName)
               if ($sev -eq 'Error') { Write-Output "::error::$linea"; $hayError = $true }
               elseif ($sev -eq 'Warning') { Write-Output "::warning::$linea" }
               else { Write-Output $linea }
+              ("- **{0}** `{1}` L{2}: {3} ({4})" -f $sev, $titulo, $r.Line, $r.Message, $r.RuleName) | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
             }
             return $hayError
           }
