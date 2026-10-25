@@ -1,0 +1,1 @@
+﻿===== Escenario: usuarios locales limitados (sin dominio) =====
