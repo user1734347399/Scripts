@@ -1,0 +1,110 @@
+name: Probar WireGuard v06 (instalacion + permisos)
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Ruta del script'
+        required: true
+        default: '06-AgregarPermisosWireGuard.ps1'
+
+permissions:
+  contents: write
+
+jobs:
+  probar:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Descargar MSI real de WireGuard (ultima version) junto al script
+        shell: powershell
+        run: |
+          $base = "https://download.wireguard.com/windows-client/"
+          $idx = Invoke-WebRequest -Uri $base -UseBasicParsing -TimeoutSec 60
+          $cands = [regex]::Matches($idx.Content, 'wireguard-amd64-[0-9.]+\.msi') | ForEach-Object { $_.Value } | Sort-Object -Unique
+          $msi = $cands | Sort-Object { [version]([regex]::Match($_, '[0-9]+(\.[0-9]+)+').Value) } | Select-Object -Last 1
+          Write-Output "MSI elegido: $msi"
+          Invoke-WebRequest -Uri ($base + $msi) -OutFile "wireguard.msi" -TimeoutSec 180
+          Write-Output ("Descargado: {0:N0} bytes" -f (Get-Item wireguard.msi).Length)
+
+      - name: Crear 2 usuarios locales limitados
+        shell: powershell
+        run: |
+          $sig = '[DllImport("userenv.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern int CreateProfile([MarshalAs(UnmanagedType.LPWStr)] string pszUserSid, [MarshalAs(UnmanagedType.LPWStr)] string pszUserName, [Out][MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszProfilePath, uint cchProfilePath);'
+          $api = Add-Type -MemberDefinition $sig -Namespace WG -Name Prof -PassThru
+          foreach ($u in @(@{N="jperez";P="Prueba#2026aA!"}, @{N="mlopez";P="Prueba#2026bB!"})) {
+            cmd /c "net user `"$($u.N)`" `"$($u.P)`" /add" | Out-Null
+            $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $u.N)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+            $sb = New-Object System.Text.StringBuilder(260)
+            [void]$api::CreateProfile($sid, $u.N, $sb, 260)
+            Write-Output "Creado $($u.N)"
+          }
+
+      - name: CASO 1 - instala desde cero + permisos
+        shell: pwsh
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'PSTools.zip'; $dir = Join-Path $env:RUNNER_TEMP 'PSTools'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/PSTools.zip' -OutFile $zip -TimeoutSec 120
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $psexec = Join-Path $dir 'PsExec64.exe'
+          $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          $log = Join-Path $env:RUNNER_TEMP "r1.txt"; $cmd = Join-Path $env:RUNNER_TEMP "l1.cmd"
+          @('@echo off', "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1", 'exit /b %ERRORLEVEL%') | Set-Content -LiteralPath $cmd -Encoding ascii
+          $p = Start-Process -FilePath $psexec -ArgumentList @('-accepteula','-nobanner','-s','cmd.exe','/c',"`"$cmd`"") -NoNewWindow -PassThru
+          $null = $p.Handle; $p.WaitForExit(240000) | Out-Null
+          $out = Join-Path (Get-Location) "_resultados\wg-v06.txt"
+          New-Item -ItemType Directory -Path (Split-Path $out) -Force | Out-Null
+          "################  CASO 1: INSTALA DESDE CERO + PERMISOS  ################" | Set-Content $out -Encoding utf8
+          "Exit code: $($p.ExitCode)" | Add-Content $out -Encoding utf8
+          "----- LO QUE VE EN PANTALLA -----" | Add-Content $out -Encoding utf8
+          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 }
+
+      - name: Verificar que WireGuard quedo instalado
+        shell: powershell
+        run: |
+          $out = Join-Path (Get-Location) "_resultados\wg-v06.txt"
+          "----- VERIFICACION DE INSTALACION -----" | Add-Content $out -Encoding utf8
+          $exe = Test-Path (Join-Path $env:ProgramFiles "WireGuard\wireguard.exe")
+          $svc = [bool](Get-Service -Name WireGuardManager -ErrorAction SilentlyContinue)
+          "Ejecutable presente: $exe" | Add-Content $out -Encoding utf8
+          "Servicio WireGuardManager: $svc" | Add-Content $out -Encoding utf8
+          $opName = (Get-LocalGroup | Where-Object { $_.SID -eq 'S-1-5-32-556' }).Name
+          "Miembros de '$opName':" | Add-Content $out -Encoding utf8
+          try { Get-LocalGroupMember -Group $opName | ForEach-Object { "   $($_.Name)" | Add-Content $out -Encoding utf8 } } catch { "   (error)" | Add-Content $out -Encoding utf8 }
+          try { $v = (Get-ItemProperty "HKLM:\Software\WireGuard" -Name LimitedOperatorUI -EA Stop).LimitedOperatorUI; "Registro LimitedOperatorUI = $v" | Add-Content $out -Encoding utf8 } catch { "Registro: no existe" | Add-Content $out -Encoding utf8 }
+
+      - name: CASO 2 - ya instalado, re-ejecucion
+        shell: pwsh
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          $psexec = Join-Path (Join-Path $env:RUNNER_TEMP 'PSTools') 'PsExec64.exe'
+          $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          $log = Join-Path $env:RUNNER_TEMP "r2.txt"; $cmd = Join-Path $env:RUNNER_TEMP "l2.cmd"
+          @('@echo off', "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1", 'exit /b %ERRORLEVEL%') | Set-Content -LiteralPath $cmd -Encoding ascii
+          $p = Start-Process -FilePath $psexec -ArgumentList @('-accepteula','-nobanner','-s','cmd.exe','/c',"`"$cmd`"") -NoNewWindow -PassThru
+          $null = $p.Handle; $p.WaitForExit(120000) | Out-Null
+          $out = Join-Path (Get-Location) "_resultados\wg-v06.txt"
+          "" | Add-Content $out -Encoding utf8
+          "################  CASO 2: YA INSTALADO (re-ejecucion)  ################" | Add-Content $out -Encoding utf8
+          "Exit code: $($p.ExitCode)" | Add-Content $out -Encoding utf8
+          "----- LO QUE VE EN PANTALLA -----" | Add-Content $out -Encoding utf8
+          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 }
+          "" | Add-Content $out -Encoding utf8
+          "----- LOG INTERNO (ultima corrida) -----" | Add-Content $out -Encoding utf8
+          if (Test-Path "C:\ProgramData\IT\Wireguard\log.txt") { Get-Content "C:\ProgramData\IT\Wireguard\log.txt" | Add-Content $out -Encoding utf8 }
+
+      - name: Commit salida
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "gh-actions"; git config user.email "actions@github.com"
+          git add _resultados/wg-v06.txt
+          git commit -m "resultados: WireGuard v06 instalacion + permisos [skip ci]" 2>&1 | Out-Host
+          git push origin HEAD:main 2>&1 | Out-Host
