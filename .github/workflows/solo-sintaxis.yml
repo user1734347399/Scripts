@@ -1,0 +1,73 @@
+name: Solo sintaxis (sin ejecutar)
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Ruta del script a validar (solo parseo, NO se ejecuta)'
+        required: true
+        default: '06-SafeMode-RunExe-Test.ps1'
+
+jobs:
+  sintaxis:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validar sintaxis del script y de sus here-strings embebidos
+        shell: powershell
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          $fallo = $false
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          Write-Output "===== Validando: $env:SCRIPT ====="
+
+          # 1) Parsear el script principal
+          $tokens = $null; $errores = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($ruta, [ref]$tokens, [ref]$errores)
+          if ($errores.Count -gt 0) {
+            $fallo = $true
+            Write-Output "::error::SCRIPT PRINCIPAL: $($errores.Count) error(es)"
+            foreach ($e in $errores) {
+              Write-Output ("  linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
+            }
+          } else {
+            Write-Output "OK: sintaxis del script principal"
+          }
+
+          # 2) Extraer y parsear cada here-string de un solo-cuota @' ... '@ (los bloques embebidos)
+          $raw = Get-Content -LiteralPath $ruta -Raw
+          $rx = [regex]"(?s)@'\r?\n(.*?)\r?\n'@"
+          $m = $rx.Matches($raw)
+          Write-Output ("Here-strings embebidos encontrados: " + $m.Count)
+          $i = 0
+          foreach ($match in $m) {
+            $i++
+            $contenido = $match.Groups[1].Value
+            $tk = $null; $er = $null
+            [void][System.Management.Automation.Language.Parser]::ParseInput($contenido, [ref]$tk, [ref]$er)
+            if ($er.Count -gt 0) {
+              $fallo = $true
+              Write-Output "::error::HERE-STRING #$i : $($er.Count) error(es)"
+              foreach ($e in $er) {
+                Write-Output ("  (dentro del bloque) linea {0}, col {1}: {2}" -f $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
+              }
+            } else {
+              Write-Output "OK: here-string embebido #$i (parsea como script valido)"
+            }
+          }
+
+          # 3) BOM / no-ASCII
+          $bytes = [IO.File]::ReadAllBytes($ruta)
+          $tieneBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+          $tieneNoAscii = [bool]($bytes | Where-Object { $_ -gt 127 } | Select-Object -First 1)
+          if ($tieneNoAscii -and -not $tieneBom) {
+            Write-Output "::warning::Tiene caracteres no ASCII sin BOM UTF-8 (PS 5.1 los lee mal)"
+          } else {
+            Write-Output "OK: codificacion (BOM=$tieneBom, noASCII=$tieneNoAscii)"
+          }
+
+          if ($fallo) { Write-Output "RESULTADO: HAY ERRORES DE SINTAXIS"; exit 1 }
+          Write-Output "RESULTADO: SINTAXIS OK (principal + embebidos)"

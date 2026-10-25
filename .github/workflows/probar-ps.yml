@@ -11,9 +11,10 @@ on:
         description: 'Timeout de ejecución como SYSTEM (segundos)'
         required: false
         default: '600'
-  push:
-    paths:
-      - '**.ps1'
+  # push automatico DESACTIVADO temporalmente (evita ejecutar scripts destructivos en el runner)
+  # push:
+  #   paths:
+  #     - '**.ps1'
 
 jobs:
   probar:
