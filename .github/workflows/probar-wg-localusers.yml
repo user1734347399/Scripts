@@ -35,12 +35,17 @@ jobs:
           $api = Add-Type -MemberDefinition $sig -Namespace WG -Name Prof -PassThru
 
           foreach ($u in $users) {
-            net user $u.Name $u.Pass /add /y | Out-Null
-            net localgroup "Administrators" $u.Name /delete 2>$null | Out-Null
-            $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $u.Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
-            $sb = New-Object System.Text.StringBuilder(260)
-            $hr = $api::CreateProfile($sid, $u.Name, $sb, 260)
-            ("Creado {0}  SID={1}  perfil_hr=0x{2:X8}  ruta={3}" -f $u.Name, $sid, $hr, $sb.ToString()) | Add-Content $out -Encoding utf8
+            try {
+              cmd /c "net user `"$($u.Name)`" `"$($u.Pass)`" /add" 2>&1 | ForEach-Object { ("  net user: {0}" -f $_) | Add-Content $out -Encoding utf8 }
+              # Nos aseguramos de que NO sea admin (queda solo en Users = limitado)
+              cmd /c "net localgroup Administrators `"$($u.Name)`" /delete" 2>&1 | Out-Null
+              $sid = (New-Object System.Security.Principal.NTAccount($env:COMPUTERNAME, $u.Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+              $sb = New-Object System.Text.StringBuilder(260)
+              $hr = $api::CreateProfile($sid, $u.Name, $sb, 260)
+              ("Creado {0}  SID={1}  perfil_hr=0x{2:X8}  ruta={3}" -f $u.Name, $sid, $hr, $sb.ToString()) | Add-Content $out -Encoding utf8
+            } catch {
+              ("FALLO creando {0}: {1}" -f $u.Name, $_.Exception.Message) | Add-Content $out -Encoding utf8
+            }
           }
 
           "----- ProfileList S-1-5-21 visible para el script -----" | Add-Content $out -Encoding utf8
