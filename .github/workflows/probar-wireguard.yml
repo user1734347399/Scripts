@@ -1,0 +1,95 @@
+name: Probar WireGuard (captura salida al repo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Ruta del script a probar'
+        required: true
+        default: '04-AgregarPermisosWireGuard.ps1'
+
+permissions:
+  contents: write
+
+jobs:
+  probar:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sembrar SID huerfano en grupos locales (reproduce el escenario del error 1789)
+        shell: powershell
+        run: |
+          # Un SID de dominio ficticio que NO resuelve: es justo lo que hacia
+          # reventar a Get-LocalGroupMember con "codigo de error = 1789".
+          $sidFantasma = "S-1-5-21-1111111111-2222222222-3333333333-1234"
+          foreach ($g in @("S-1-5-32-544","S-1-5-32-556")) {
+            try {
+              $gName = (Get-LocalGroup | Where-Object { $_.SID -eq $g }).Name
+              $grp = [ADSI]"WinNT://$env:COMPUTERNAME/$gName,group"
+              $grp.Add("WinNT://$sidFantasma")
+              Write-Output "Sembrado SID huerfano en $gName"
+            } catch {
+              Write-Output "No se pudo sembrar en $g : $($_.Exception.Message)"
+            }
+          }
+          # Prueba de control: confirmar que el cmdlet VIEJO revienta con este SID
+          Write-Output "--- Control: Get-LocalGroupMember sobre Administradores ---"
+          try {
+            Get-LocalGroupMember -Group (Get-LocalGroup | Where-Object { $_.SID -eq 'S-1-5-32-544' }).Name | Out-Null
+            Write-Output "Get-LocalGroupMember NO fallo"
+          } catch {
+            Write-Output "Get-LocalGroupMember FALLO (esperado): $($_.Exception.Message)"
+          }
+
+      - name: Ejecutar script como SYSTEM y capturar salida
+        shell: pwsh
+        env:
+          SCRIPT: ${{ github.event.inputs.script }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'PSTools.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'PSTools'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/PSTools.zip' -OutFile $zip -TimeoutSec 120
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $psexec = Join-Path $dir 'PsExec64.exe'
+
+          $ps51 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $ruta = (Resolve-Path $env:SCRIPT).Path
+          $log  = Join-Path $env:RUNNER_TEMP "wg.txt"
+          $cmd  = Join-Path $env:RUNNER_TEMP "lanzar.cmd"
+          @(
+            '@echo off'
+            "`"$ps51`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ruta`" > `"$log`" 2>&1"
+            'exit /b %ERRORLEVEL%'
+          ) | Set-Content -LiteralPath $cmd -Encoding ascii
+
+          $p = Start-Process -FilePath $psexec -ArgumentList @('-accepteula','-nobanner','-s','cmd.exe','/c',"`"$cmd`"") -NoNewWindow -PassThru
+          $null = $p.Handle
+          $p.WaitForExit(120000) | Out-Null
+          $code = $p.ExitCode
+
+          $dest = Join-Path (Get-Location) "_resultados"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          $out = Join-Path $dest "wireguard-salida.txt"
+          "===== Ejecucion como SYSTEM de $env:SCRIPT =====" | Set-Content $out -Encoding utf8
+          "Exit code: $code" | Add-Content $out -Encoding utf8
+          "----- STDOUT + STDERR (todo lo que se veria en consola) -----" | Add-Content $out -Encoding utf8
+          if (Test-Path $log) { Get-Content -LiteralPath $log -Encoding Oem | Add-Content $out -Encoding utf8 } else { "(sin salida)" | Add-Content $out -Encoding utf8 }
+          "----- Verificacion registro -----" | Add-Content $out -Encoding utf8
+          try {
+            $v = Get-ItemProperty -Path "HKLM:\Software\WireGuard" -Name LimitedOperatorUI -ErrorAction Stop
+            "LimitedOperatorUI = $($v.LimitedOperatorUI)" | Add-Content $out -Encoding utf8
+          } catch { "No se pudo leer la clave: $($_.Exception.Message)" | Add-Content $out -Encoding utf8 }
+
+          Write-Output "Exit code del script: $code"
+
+      - name: Commitear salida
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "gh-actions"
+          git config user.email "actions@github.com"
+          git add _resultados/wireguard-salida.txt
+          git commit -m "resultados: salida prueba WireGuard [skip ci]" 2>&1 | Out-Host
+          git push origin HEAD:main 2>&1 | Out-Host
