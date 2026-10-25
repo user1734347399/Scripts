@@ -1,8 +1,27 @@
 ﻿===== Escenario: usuarios locales limitados (sin dominio) =====
-  net user: The command completed successfully.
-  net user: 
-FALLO creando wgLocal1: System error 1377 has occurred.
-  net user: The command completed successfully.
-  net user: 
-FALLO creando wgLocal2: System error 1377 has occurred.
+Creado wgLocal1  SID=S-1-5-21-3776380004-1005456608-3524014338-1003  perfil_hr=0x00000000  ruta=C:\Users\wgLocal1
+Creado wgLocal2  SID=S-1-5-21-3776380004-1005456608-3524014338-1004  perfil_hr=0x00000000  ruta=C:\Users\wgLocal2
 ----- ProfileList S-1-5-21 visible para el script -----
+S-1-5-21-3776380004-1005456608-3524014338-1003  C:\Users\wgLocal1
+S-1-5-21-3776380004-1005456608-3524014338-1004  C:\Users\wgLocal2
+
+===== Salida del script (como SYSTEM) =====
+Exit code: 0
+
+1 Por favor espere
+
+2 Por favor espere
+
+3 Por favor espere
+Usuario agregado al grupo
+Usuario agregado al grupo
+
+4 Por favor espere
+
+5 Terminando
+
+===== VERIFICACION =====
+Miembros de 'Network Configuration Operators' despues de correr el script:
+   runnervmdaln5\wgLocal1  [S-1-5-21-3776380004-1005456608-3524014338-1003]
+   runnervmdaln5\wgLocal2  [S-1-5-21-3776380004-1005456608-3524014338-1004]
+Registro LimitedOperatorUI = 1
