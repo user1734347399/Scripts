@@ -1,0 +1,54 @@
+################  CASO 1: INSTALA DESDE CERO + PERMISOS  ################
+Exit code: 0
+----- LO QUE VE EN PANTALLA -----
+
+Por favor espere...
+
+WireGuard instalado correctamente.
+Permisos aplicados correctamente.
+
+2 usuarios agregados:
+  - jperez
+  - mlopez
+
+Clave de registro: OK
+Log: C:\ProgramData\IT\Wireguard\log.txt
+
+Falta reiniciar la PC.
+----- VERIFICACION DE INSTALACION -----
+Ejecutable presente: True
+Servicio WireGuardManager: True
+Miembros de 'Network Configuration Operators':
+   runnervmdaln5\jperez
+   runnervmdaln5\mlopez
+Registro LimitedOperatorUI = 1
+
+################  CASO 2: YA INSTALADO (re-ejecucion)  ################
+Exit code: 0
+----- LO QUE VE EN PANTALLA -----
+
+Por favor espere...
+
+WireGuard ya estaba instalado.
+Permisos: los usuarios ya los tenian.
+
+2 ya tenian permisos:
+  - jperez
+  - mlopez
+
+Clave de registro: OK
+Log: C:\ProgramData\IT\Wireguard\log.txt
+
+Falta reiniciar la PC.
+
+----- LOG INTERNO (ultima corrida) -----
+===== WireGuard - Instalar + Agregar permisos (v06) =====
+2026-10-25 23:41:41  Equipo: runnervmdaln5  Contexto: NT AUTHORITY\SYSTEM
+2026-10-25 23:41:41  Deteccion -> Ejecutable=True  Servicio=True  Clave=False
+2026-10-25 23:41:41  WireGuard ya estaba instalado, se omite la instalacion
+2026-10-25 23:41:41  Grupo destino: Network Configuration Operators
+2026-10-25 23:41:41  Perfiles encontrados: 2
+2026-10-25 23:41:41  jperez -> ya tenia permisos
+2026-10-25 23:41:41  mlopez -> ya tenia permisos
+2026-10-25 23:41:41  Registro LimitedOperatorUI = 1
+2026-10-25 23:41:41  Resultado: 0 agregados, 2 ya tenian, 0 con error
