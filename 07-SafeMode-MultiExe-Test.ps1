@@ -2,32 +2,28 @@
 =========================================================================
  Objetivo:
    Motor "Modo Seguro automatizado" (NSSM) corriendo VARIOS .exe EN SECUENCIA
-   dentro de Safe Mode, como SYSTEM y sin login, capturando la salida y el
-   exit code de cada uno en su propio log.
+   dentro de Safe Mode, como SYSTEM y sin login, capturando salida y exit code
+   de cada uno. Disenado para ser A PRUEBA DE LOOP: sirve hasta en notebooks
+   por WiFi (donde en Safe Mode NO hay red y no hay salida remota).
 
    Prueba actual (inofensiva, no toca ningun AV):
-     1) driverquery /v   -> enumera drivers cargados (captura salida grande)
+     1) driverquery /v   -> enumera drivers (captura salida grande)
      2) msiexec /quiet /x {GUID-inexistente} -> sonda: ver si Windows Installer
         responde en Safe Mode (msiserver suele estar deshabilitado ahi)
 
-   Para usarlo con ESET mas adelante: agregar/cambiar una entrada en $payloads
-   (p.ej. C:\Intel\ESETUninstaller.exe con /force).
+   Para ESET: editar la lista $payloads (p.ej. C:\Intel\ESETUninstaller.exe /force).
 
- Flujo:
-   FASE ARM (modo normal, por Action1 como SYSTEM):
-     1) Protege agentes remotos (Action1/Mesh/RustDesk/AnyDesk) en SafeBoot\Network.
-     2) Escribe el WORKER (con la lista de payloads embebida).
-     3) Crea servicio real con NSSM (SYSTEM) y lo mete en SafeBoot\Network.
-     4) bcdedit safeboot network (verificado) y reinicia.
-   FASE WORKER (ya en Safe Mode, SYSTEM, sin login):
-     - Loguea fecha/hora, usuario, OptionValue.
-     - Corre cada payload EN ORDEN, con timeout propio, capturando salida+exit.
-     - finally: revierte SafeBoot, agenda borrado del servicio (RunOnce),
-       reinicia a normal. Siempre vuelve, aunque un payload falle.
+ CLAVE DE SEGURIDAD (a prueba de loop):
+   El worker, lo PRIMERO que hace es QUITAR el safeboot. Una vez dentro de Safe
+   Mode ya no se necesita la marca; al sacarla al inicio, cualquier reinicio
+   posterior vuelve a Windows normal AUNQUE el worker falle o se corte la luz.
+   Nunca queda en loop de Safe Mode.
 
- Notas:
+ Diseno robusto:
+   - Worker ESTATICO: los payloads se leen de un JSON en disco (no se insertan
+     por texto), asi no hay forma de romper el parseo del worker.
    - Rutas completas a System32 -> evita el bug 32/64 bits.
-   - Tope de tiempo global en el ARM: no cuelga Action1.
+   - Tope de tiempo global en el ARM (no cuelga Action1) y timeout por cada exe.
    - Windows PowerShell 5.1. Enviar como script .ps1 por Action1, NUNCA como cmd.
 =========================================================================
 #>
@@ -35,6 +31,7 @@
 # ================== CONFIG ==================
 $log          = "C:\Intel\SafeSvc-Arm.txt"
 $workerPath   = "C:\Intel\SafeSvc-Worker.ps1"
+$payloadsJson = "C:\Intel\SafeSvc-Payloads.json"
 $added        = "C:\Intel\SafeSvc-Added.txt"
 $nssm         = "C:\Intel\nssm.exe"
 $svc          = "CortexSafeSvc"
@@ -43,17 +40,18 @@ $payloadTimeoutSeg = 120       # timeout de CADA exe
 
 # --- Lista de payloads a correr EN ORDEN. Para ESET: agregar/cambiar una entrada. ---
 $payloads = @(
-  @{ Exe="C:\Windows\System32\driverquery.exe"; Args="/v";                                          Log="C:\Intel\SafeSvc-01-driverquery.txt" },
-  @{ Exe="C:\Windows\System32\msiexec.exe";      Args="/quiet /x {00000000-0000-0000-0000-000000000000}"; Log="C:\Intel\SafeSvc-02-msiexec.txt" }
+  @{ Exe="C:\Windows\System32\driverquery.exe"; Args="/v";                                                 Log="C:\Intel\SafeSvc-01-driverquery.txt" },
+  @{ Exe="C:\Windows\System32\msiexec.exe";      Args="/quiet /x {00000000-0000-0000-0000-000000000000}";   Log="C:\Intel\SafeSvc-02-msiexec.txt" }
 )
 
 # Agentes de acceso remoto a mantener vivos en Safe Mode con Red
+# (util en desktop por Ethernet; en notebook WiFi normalmente NO hay red en Safe Mode)
 $keepKeywords = @("a1agent","mesh","rustdesk","anydesk")
 
 # ================== INFRA ==================
 $armInicio = Get-Date
 New-Item -ItemType Directory -Path "C:\Intel" -Force -EA SilentlyContinue | Out-Null
-"==== SAFE SVC ARM (MultiExe Test) $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content $log -Encoding UTF8
+"==== SAFE SVC ARM (MultiExe Test v2) $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content $log -Encoding UTF8
 "" | Set-Content $added -Encoding UTF8
 function Log($m){ $l=(Get-Date -Format 'HH:mm:ss')+' '+$m; Add-Content $log $l -EA SilentlyContinue; Write-Output $l }
 function TopeVencido { return ((New-TimeSpan -Start $armInicio -End (Get-Date)).TotalSeconds -gt $topeArmSeg) }
@@ -72,6 +70,10 @@ if(-not (Test-Path $nssm)){
 }else{ Log "NSSM ya estaba en $nssm" }
 
 if(TopeVencido){ Log "ABORTO: tope de tiempo del ARM vencido en descarga NSSM."; exit 1 }
+
+# ================== escribir payloads a JSON (worker los lee de ahi) ==================
+($payloads | ConvertTo-Json -Depth 3) | Set-Content $payloadsJson -Encoding UTF8
+Log "payloads escritos en $payloadsJson ($($payloads.Count) exe)"
 
 # ================== proteger agentes remotos en Safe Mode con Red ==================
 $svcKey="HKLM:\SYSTEM\CurrentControlSet\Services"
@@ -94,21 +96,14 @@ Log ("agentes protegidos: " + ($keep -join ", "))
 
 if(TopeVencido){ Log "ABORTO: tope de tiempo del ARM vencido."; exit 1 }
 
-# ================== generar literal de payloads para embeber en el worker ==================
-$payloadLiteral = "@(" + [Environment]::NewLine
-foreach($p in $payloads){
-  $payloadLiteral += ("  @{ Exe='" + $p.Exe + "'; Args='" + $p.Args + "'; Log='" + $p.Log + "' }," + [Environment]::NewLine)
-}
-$payloadLiteral += ")"
-
-# ================== WORKER (plantilla con __PAYLOADS__ y __TIMEOUT__) ==================
-$workerTpl = @'
+# ================== WORKER (ESTATICO: lee payloads del JSON) ==================
+$worker = @'
 $log="C:\Intel\SafeSvc-Worker.txt"
 $svc="CortexSafeSvc"
 $added="C:\Intel\SafeSvc-Added.txt"
+$payloadsJson="C:\Intel\SafeSvc-Payloads.json"
 $SYS="$env:windir\System32"
-$payloads = __PAYLOADS__
-$timeoutMs = __TIMEOUT__ * 1000
+$timeoutMs=120000
 New-Item -ItemType Directory -Path "C:\Intel" -Force -EA SilentlyContinue | Out-Null
 function Log($m){ $l=(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')+' '+$m; Add-Content $log $l -EA SilentlyContinue }
 
@@ -140,7 +135,13 @@ Log ("equipo  = " + $env:COMPUTERNAME)
 $opt=(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Option" -Name OptionValue -EA SilentlyContinue).OptionValue
 if($opt){ Log "SafeBoot OptionValue = $opt (2=Network) -> ESTAMOS EN MODO SEGURO" } else { Log "OptionValue vacio -> NO es Modo Seguro" }
 
+# ---- A PRUEBA DE LOOP: quitar safeboot AHORA MISMO. Ya estamos dentro de Safe
+#      Mode; sin la marca, cualquier reinicio posterior vuelve a normal. ----
+$rd = & "$SYS\bcdedit.exe" /deletevalue safeboot 2>&1
+Log ("DESARMADO safeboot al inicio: " + ($rd -join ' '))
+
 try{
+  $payloads = @(Get-Content $payloadsJson -Raw -EA SilentlyContinue | ConvertFrom-Json)
   $n=0
   foreach($pl in $payloads){
     $n++
@@ -150,14 +151,14 @@ try{
 }
 catch{ Log "ERROR en payloads: $_" }
 finally{
-  Log "Revirtiendo..."
+  Log "Limpiando SafeBoot y servicio..."
   if(Test-Path $added){
     Get-Content $added | ForEach-Object { if($_){ & "$SYS\reg.exe" delete ("HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\" + $_) /f 2>&1 | Out-Null; Log "SafeBoot quitado: $_" } }
     Remove-Item $added -Force -EA SilentlyContinue
   }
   & "$SYS\reg.exe" delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\CortexSafeSvc" /f 2>&1 | Out-Null
-  $r = & "$SYS\bcdedit.exe" /deletevalue safeboot 2>&1
-  Log ("bcdedit revert: " + ($r -join ' '))
+  # por si acaso, re-asegurar que safeboot no este
+  & "$SYS\bcdedit.exe" /deletevalue safeboot 2>&1 | Out-Null
   $ro="HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
   if(-not (Test-Path $ro)){ New-Item -Path $ro -Force | Out-Null }
   Set-ItemProperty -Path $ro -Name "CortexSafeSvcCleanup" -Value ("$SYS\sc.exe delete " + $svc) -EA SilentlyContinue
@@ -167,7 +168,6 @@ finally{
   & "$SYS\shutdown.exe" /r /t 15 /c "Prueba NSSM MultiExe - volviendo a normal"
 }
 '@
-$worker = $workerTpl.Replace("__PAYLOADS__", $payloadLiteral).Replace("__TIMEOUT__", [string]$payloadTimeoutSeg)
 Set-Content -Path $workerPath -Value $worker -Encoding UTF8
 Log "worker escrito en $workerPath"
 
@@ -198,6 +198,6 @@ if(($rb -join ' ') -notmatch "correctamente|completed successfully"){
   exit 1
 }
 Log "reinicio a Modo Seguro con Red en 15s. El servicio arranca solo como SYSTEM."
-Log "Logs: C:\Intel\SafeSvc-Worker.txt (motor), SafeSvc-01-driverquery.txt y SafeSvc-02-msiexec.txt (salidas)"
+Log "Logs: C:\Intel\SafeSvc-Worker.txt (motor), SafeSvc-01-driverquery.txt y SafeSvc-02-msiexec.txt"
 & "$SYS\shutdown.exe" /r /t 15 /c "Prueba NSSM MultiExe - reinicio tecnico"
 exit 0
