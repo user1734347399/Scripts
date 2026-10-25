@@ -108,20 +108,21 @@ jobs:
           else { "RESULTADO: sin errores" | Out-File -Append (Join-Path $env:RUNNER_TEMP "hallazgos.txt"); "HAYERROR=0" >> $env:GITHUB_ENV }
           Write-Output "PSScriptAnalyzer termino (ver artifact hallazgos)"
 
-      - name: 2b) Publicar hallazgos como commit comment (legible por REST)
+      - name: 2b) Commitear hallazgos al repo (_resultados/hallazgos.txt)
         if: always()
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
+          $dest = Join-Path (Get-Location) "_resultados"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
           $f = Join-Path $env:RUNNER_TEMP "hallazgos.txt"
           if (-not (Test-Path $f)) { "sin archivo de hallazgos" | Set-Content $f }
-          $cuerpo = Get-Content $f -Raw
-          $payload = @{ body = ("```" + "`n" + $cuerpo + "`n" + "```") } | ConvertTo-Json -Depth 3
-          $pj = Join-Path $env:RUNNER_TEMP "comment.json"
-          Set-Content -LiteralPath $pj -Value $payload -Encoding UTF8
-          gh api -X POST ("repos/" + $env:GITHUB_REPOSITORY + "/commits/" + $env:GITHUB_SHA + "/comments") --input $pj
-          Write-Output "hallazgos publicados"
+          Copy-Item $f (Join-Path $dest "hallazgos.txt") -Force
+          git config user.name "gh-actions"
+          git config user.email "actions@github.com"
+          git add _resultados/hallazgos.txt
+          git commit -m "resultados: hallazgos PSScriptAnalyzer [skip ci]" 2>&1 | Out-Host
+          git push origin HEAD:main 2>&1 | Out-Host
+          Write-Output "hallazgos commiteados en _resultados/"
 
       - name: 3) Ejecutar SOLO el payload aislado (corre el exe + captura, NO toca bcdedit)
         shell: powershell
