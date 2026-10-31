@@ -1,0 +1,156 @@
+=====================================================================
+ ACCESO REMOTO A TANGO CSByA - DOCUMENTACION
+ ITSur - Ultima actualizacion: 31/10/2026
+=====================================================================
+
+1. QUE RESUELVE
+---------------------------------------------------------------------
+La usuaria trabaja en Tango (servidor TangoCSByA) y descarga PDFs.
+Esos PDFs tienen que llegar a su PC sin pasos manuales.
+
+Camino de conexion:
+
+  PC de la usuaria --(RDP, LAN)--> TERMINAL00 --(tunel Cloudflare,
+  RDP a localhost)--> TangoCSByA
+
+Camino de los PDFs:
+
+  TangoCSByA guarda en \\tsclient\P
+     -> cae en C:\Users\<usuario>\Tango de TERMINAL00
+     -> la PC de la usuaria lo ve en la unidad T: (carpeta compartida)
+
+
+2. ARCHIVOS (TERMINAL00, carpeta C:\ITSur\AccesoTango)
+---------------------------------------------------------------------
+  Instalar (CMD)            Lanzador CMD propio: verifica permisos,
+                            se autoeleva y ejecuta el instalador .ps1.
+
+  09-Instalar-AccesoTango.ps1
+                            Se corre UNA VEZ (como administrador):
+                             - crea C:\ITSur\AccesoTango si no existe
+                             - verifica cloudflared; si falta lo instala
+                               con winget y refresca el PATH
+                            Exit: 0 OK / 1 carpeta / 2 cloudflared.
+
+  01-Tsclient.ps1           Lanzador de uso diario (script de
+                            prelanzamiento). Crea %USERPROFILE%\Tango,
+                            la monta como unidad P: (subst) y despues
+                            ejecuta Conectar-Tango.ps1.
+
+  Conectar-Tango.ps1        Script original: levanta cloudflared
+                            (tunel) y abre mstsc con Tango-CSByA.rdp.
+                            NO se modifica.
+
+  Tango-CSByA.rdp           Conexion a localhost (tunel). Redirige SOLO
+                            la unidad P: (drivestoredirect:s:P:\;).
+                            Esta FIRMADO (ver punto 5).
+
+Los archivos .ps1 y .rdp se copian a mano a la carpeta.
+
+
+3. CONTENIDO DE 01-Tsclient.ps1
+---------------------------------------------------------------------
+<#
+-Crea la carpeta Tango
+-Montar esa carpeta como unidad P con \\tsclient\P
+-Ejecutar Conectar-Tango.ps1
+#>
+
+$Carpeta = Join-Path $env:USERPROFILE 'Tango'
+if (-not (Test-Path $Carpeta)) { New-Item $Carpeta -ItemType Directory | Out-Null }
+
+$null = subst.exe P: /D 2>&1
+$null = subst.exe P: $Carpeta 2>&1
+
+& 'C:\ITSur\AccesoTango\Conectar-Tango.ps1'
+exit
+
+Notas:
+ - P: es un "subst": una letra virtual que apunta a la carpeta. Vive
+   en la sesion del usuario y se pierde al cerrar sesion; por eso el
+   lanzador la vuelve a crear SIEMPRE antes de conectar.
+ - RDP solo puede redirigir unidades enteras, no carpetas. Por eso se
+   usa P: en lugar de redirigir todo el C:.
+
+
+4. ACCESO DIRECTO (escritorio de la usuaria)
+---------------------------------------------------------------------
+  Destino:
+    C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ITSur\AccesoTango\01-Tsclient.ps1"
+  Ejecutar:  Minimizada   (evita el parpadeo de la ventana)
+  Icono:     C:\Windows\System32\mstsc.exe
+  Opciones avanzadas: "Ejecutar como administrador" DESTILDADO
+
+IMPORTANTE: es el UNICO punto de entrada. Si la usuaria abre el .rdp
+directamente, P: puede no existir y no se redirige nada.
+
+IMPORTANTE: el lanzador NO debe correr elevado. Con UAC, las unidades
+subst de un proceso elevado y de uno normal son distintas: si se
+eleva, mstsc no ve P:.
+
+
+5. FIRMA DEL .RDP (una sola vez, PowerShell como administrador)
+---------------------------------------------------------------------
+Motivo: un .rdp sin firmar ("Editor desconocido") muestra una
+advertencia con las casillas de recursos DESTILDADAS. Si no se tilda
+"Unidades", la conexion sale sin \\tsclient\P.
+
+Comando usado (crea certificado propio, lo marca como confiable,
+respalda y firma el .rdp, y lo registra como editor de confianza):
+
+$c=New-SelfSignedCertificate -Subject 'CN=ITSur RDP Signing' -CertStoreLocation Cert:\LocalMachine\My -NotAfter (Get-Date).AddYears(10); $st=New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine'); $st.Open('ReadWrite'); $st.Add($c); $st.Close(); $r='C:\ITSur\AccesoTango\Tango-CSByA.rdp'; Copy-Item $r "$r.presign.bak" -Force; $h=(Get-FileHash -Algorithm SHA256 -InputStream ([IO.MemoryStream]::new($c.RawData))).Hash; rdpsign.exe /sha256 $h $r; if($LASTEXITCODE -ne 0){rdpsign.exe /sha1 $c.Thumbprint $r}; $k='HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'; if(-not(Test-Path $k)){New-Item $k -Force | Out-Null}; Set-ItemProperty $k -Name TrustedCertThumbprints -Value $c.Thumbprint; "Thumbprint: $($c.Thumbprint)"; Select-String -Path $r -Pattern '^signature'
+
+Atencion:
+ - Si se EDITA el .rdp, la firma se invalida: volver a firmar con
+   rdpsign (el certificado ya existe, no hace falta crearlo de nuevo).
+ - El certificado es de confianza solo en TERMINAL00. Si el .rdp se
+   copia a otro equipo, hay que repetir la firma alli.
+
+
+6. CARPETA COMPARTIDA (TERMINAL00 -> PC de la usuaria)
+---------------------------------------------------------------------
+  Carpeta:   C:\Users\cnavarrete\Tango   (dentro del perfil: privada)
+  Share:     \\TERMINAL00\Tango
+  Permisos de recurso compartido: Todos - Control total
+  Permisos NTFS (los que mandan): la usuaria, IT SUR, Administradores
+                                  locales y SYSTEM.
+
+Montaje en la PC de la usuaria (CON SU SESION, CMD normal):
+  net use T: \\TERMINAL00\Tango /persistent:yes
+
+Notas:
+ - Windows aplica el permiso mas restrictivo entre share y NTFS, por
+   eso "Todos" en el share no expone la carpeta.
+ - Cualquier administrador local de TERMINAL00 puede entrar a la
+   carpeta. Verificar en que grupo local esta SGA\Grupo_RDP:
+     net localgroup Administradores & net localgroup "Usuarios de escritorio remoto"
+
+
+7. VERIFICACION / PROBLEMAS FRECUENTES
+---------------------------------------------------------------------
+En TERMINAL00 (PowerShell normal, sin admin):
+  subst
+  -> debe mostrar  P:\: => C:\Users\<usuario>\Tango
+
+En TangoCSByA:
+  Test-Path \\tsclient\P
+  -> debe dar True
+
+Si da False:
+  1) Se abrio el .rdp sin pasar por el acceso directo -> usar el acceso.
+  2) Aparece la advertencia con casillas destildadas -> el .rdp perdio
+     la firma (se edito). Volver a firmar (punto 5).
+  3) El lanzador corrio elevado -> destildar "Ejecutar como
+     administrador" en el acceso directo.
+  4) Redireccion bloqueada en el servidor (GPO). Verificar en
+     TangoCSByA (CMD admin):
+       reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v fDisableCdm
+     Si devuelve 0x1, la GPO "No permitir la redireccion de unidades"
+     esta habilitada.
+
+La raiz \\tsclient siempre aparece vacia en el Explorador: es normal.
+Entrar directo a \\tsclient\P.
+
+Rendimiento medido (tunel + canal RDP): ~1,5 s por archivo copiado y
+~2,5 s para listar la carpeta. Aceptable para guardar PDFs; mantener
+la carpeta liviana (mover PDFs viejos a otra carpeta).
