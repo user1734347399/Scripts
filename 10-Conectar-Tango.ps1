@@ -1,15 +1,13 @@
 <#
-Objetivo:
-    Acceso remoto a Tango CSByA en un solo script:
-     1) Verificar que exista la carpeta %USERPROFILE%\Tango
-     2) Montarla como unidad P: (subst) para que el RDP la redirija
-        a TangoCSByA como \\tsclient\P
-     3) Levantar el tunel de Cloudflare (cloudflared access rdp)
-     4) Abrir la sesion RDP con Tango-CSByA.rdp
-Notas:
-    Ejecutar SIN elevar (el subst de un proceso elevado no lo ve mstsc).
-    Ante cualquier error: lo muestra en consola, espera 3 segundos y
-    abre un aviso que queda en pantalla hasta que se acepte.
+Objetivo
+Verificar que exista la carpeta Tango en el perfil del usuario
+Montar esa carpeta como unidad P para usarla con tsclient
+Levantar el tunel de Cloudflare
+Abrir la sesion RDP con Tango CSByA
+
+Notas
+Ejecutar sin elevar porque mstsc no ve el subst de un proceso elevado
+Ante cualquier error muestra el mensaje, espera 3 segundos y abre un aviso
 #>
 
 $HostnameCF  = "rdp-csbya.oilone.net"
@@ -34,12 +32,12 @@ function Test-Listener {
     return ($null -ne $c)
 }
 
-# --- 1) Verificar la carpeta -------------------------------------------
+# Verificar la carpeta
 if (-not (Test-Path -LiteralPath $Carpeta -PathType Container)) {
     Mostrar-Error "No existe la carpeta: $Carpeta`n`nContactar a soporte de ITSur."
 }
 
-# --- 2) Montar la carpeta como P: --------------------------------------
+# Montar la carpeta como unidad P
 try {
     $null = & subst.exe $Letra /D 2>&1
     $salida = & subst.exe $Letra $Carpeta 2>&1
@@ -50,7 +48,7 @@ try {
     Mostrar-Error "Error al montar la unidad $Letra : $($_.Exception.Message)`n`nContactar a soporte de ITSur."
 }
 
-# --- 3) Ubicar cloudflared ---------------------------------------------
+# Ubicar cloudflared
 $Exe = (Get-Command cloudflared.exe -ErrorAction SilentlyContinue).Source
 
 if (-not $Exe) {
@@ -72,7 +70,7 @@ if (-not (Test-Path -LiteralPath $RdpFile)) {
     Mostrar-Error "Falta el archivo: $RdpFile`n`nContactar a soporte de ITSur."
 }
 
-# --- 4) Levantar el tunel si no esta activo ----------------------------
+# Levantar el tunel si no esta activo
 if (-not (Test-Listener)) {
 
     $ArgsCF = @(
@@ -100,7 +98,7 @@ if (-not (Test-Listener)) {
     }
 }
 
-# --- 5) Abrir la sesion RDP --------------------------------------------
+# Abrir la sesion RDP
 try {
     Start-Process -FilePath "mstsc.exe" -ArgumentList "`"$RdpFile`"" -ErrorAction Stop
 } catch {
